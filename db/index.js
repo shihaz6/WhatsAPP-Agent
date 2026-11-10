@@ -1,19 +1,38 @@
 // Data access for the tutor agent, on Node's built-in SQLite (node:sqlite, Node 22.13+).
 // Every query the conversation flow needs lives here, so the rest of the app never writes SQL.
+//
+// People model: a *contact* is a WhatsApp number (a parent or an adult student) and is
+// created on the first message. A *student* belongs to a contact and is only created when
+// someone enrols, books a trial or books a one-to-one session. Those functions take a
+// "student ref": either an existing student id, or { contactId, name, grade?, school? }
+// for a new student, which is created only if the action succeeds.
 
 const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
 const DEFAULT_PATH = path.join(__dirname, "..", "data", "tutor.db");
+const SCHEMA = path.join(__dirname, "schema.sql");
 let db;
 
-function open(file = process.env.DB_PATH || DEFAULT_PATH) {
+// Connect without touching the schema (resetSchema needs this for databases with an old schema).
+function connect(file = process.env.DB_PATH || DEFAULT_PATH) {
   if (db) return db;
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL;");
-  db.exec(fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8"));
+  db.exec("PRAGMA foreign_keys = ON;");
+  schemaApplied = false;
+  return db;
+}
+
+let schemaApplied = false;
+function open(file) {
+  connect(file);
+  if (!schemaApplied) {
+    db.exec(fs.readFileSync(SCHEMA, "utf8"));
+    schemaApplied = true;
+  }
   return db;
 }
 
@@ -22,11 +41,25 @@ function close() {
   db = undefined;
 }
 
+// Drop every table and recreate the schema (used by the seed; there are no migrations yet).
+function resetSchema() {
+  const conn = connect();
+  conn.exec("PRAGMA foreign_keys = OFF;");
+  const tables = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all();
+  for (const { name } of tables) conn.exec(`DROP TABLE IF EXISTS "${name}"`);
+  conn.exec(fs.readFileSync(SCHEMA, "utf8")); // also turns foreign_keys back on
+  schemaApplied = true;
+}
+
 const q = (sql) => open().prepare(sql);
 const plain = (row) => (row ? { ...row } : null); // node:sqlite rows have a null prototype
+const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%SZ','now')";
 
+let txDepth = 0;
 function transaction(fn) {
+  if (txDepth > 0) return fn(); // already inside one: join it
   open().exec("BEGIN");
+  txDepth++;
   try {
     const result = fn();
     db.exec("COMMIT");
@@ -34,6 +67,8 @@ function transaction(fn) {
   } catch (err) {
     db.exec("ROLLBACK");
     throw err;
+  } finally {
+    txDepth--;
   }
 }
 
@@ -41,7 +76,7 @@ function transaction(fn) {
 
 const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-// Today's date and time in the given timezone, e.g. { date: '2026-11-10', time: '14:05' }.
+// Date and time in the given timezone, e.g. { date: '2026-11-10', time: '14:05' }.
 function localNow(timeZone, now = new Date()) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-CA", {
@@ -59,6 +94,8 @@ function addDays(date, n) {
 }
 
 const isoDayOfWeek = (date) => new Date(`${date}T00:00:00Z`).getUTCDay() || 7;
+const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`));
+const tutorNow = (now) => localNow(getTutor()?.timezone || "Asia/Colombo", now);
 
 // ---------- Tutor & catalog ----------
 
@@ -104,41 +141,104 @@ function listAvailability() {
     .map((r) => ({ ...r, day_name: DAY_NAMES[r.day_of_week] }));
 }
 
-// ---------- Students ----------
+// ---------- Contacts ----------
 
-function getStudentByWaId(waId) {
-  return plain(q("SELECT * FROM students WHERE wa_id = ?").get(waId));
+function getContactByWaId(waId) {
+  return plain(q("SELECT * FROM contacts WHERE wa_id = ?").get(waId));
 }
 
-const STUDENT_FIELDS = ["name", "grade", "school", "parent_name", "parent_phone"];
+function getContact(id) {
+  return plain(q("SELECT * FROM contacts WHERE id = ?").get(id));
+}
 
-// Create the student if new, otherwise update only the fields given.
-function upsertStudent(waId, fields = {}) {
-  const keys = STUDENT_FIELDS.filter((k) => fields[k] !== undefined);
-  q("INSERT INTO students (wa_id) VALUES (?) ON CONFLICT(wa_id) DO NOTHING").run(waId);
+// Called on every incoming message: returns the contact, creating it for a new number.
+function ensureContact(waId) {
+  q("INSERT INTO contacts (wa_id) VALUES (?) ON CONFLICT(wa_id) DO NOTHING").run(waId);
+  return getContactByWaId(waId);
+}
+
+const CONTACT_FIELDS = ["name", "kind", "language"];
+
+function updateContact(contactId, fields = {}) {
+  const keys = CONTACT_FIELDS.filter((k) => fields[k] !== undefined);
   if (keys.length) {
-    q(`UPDATE students SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE wa_id = ?`)
-      .run(...keys.map((k) => fields[k]), waId);
+    q(`UPDATE contacts SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`)
+      .run(...keys.map((k) => fields[k]), contactId);
   }
-  return getStudentByWaId(waId);
+  return getContact(contactId);
+}
+
+// Human handoff: while paused, the bot should stay silent for this contact.
+function setBotPaused(contactId, paused, reason) {
+  q(`UPDATE contacts SET bot_paused = ?, paused_reason = ?, paused_at = ${paused ? NOW_SQL : "NULL"} WHERE id = ?`)
+    .run(paused ? 1 : 0, paused ? reason ?? null : null, contactId);
+  return getContact(contactId);
+}
+
+// ---------- Students ----------
+
+function getStudent(id) {
+  return plain(q("SELECT * FROM students WHERE id = ?").get(id));
+}
+
+function listStudents(contactId) {
+  return q("SELECT * FROM students WHERE contact_id = ? ORDER BY name").all(contactId).map(plain);
+}
+
+const STUDENT_FIELDS = ["name", "grade", "school"];
+
+function updateStudent(studentId, fields = {}) {
+  const keys = STUDENT_FIELDS.filter((k) => fields[k] !== undefined);
+  if (keys.length) {
+    q(`UPDATE students SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`)
+      .run(...keys.map((k) => fields[k]), studentId);
+  }
+  return getStudent(studentId);
+}
+
+// Look up a student ref without creating anything. Returns { student, create }:
+// `student` if it exists, otherwise `create()` makes it (call only once the action is allowed).
+function resolveStudentRef(ref) {
+  if (typeof ref === "number") {
+    const student = getStudent(ref);
+    if (!student) throw new Error(`Student ${ref} not found`);
+    return { student };
+  }
+  if (!ref?.contactId || !ref?.name?.trim()) throw new Error("A new student needs contactId and name");
+  if (!getContact(ref.contactId)) throw new Error(`Contact ${ref.contactId} not found`);
+  const name = ref.name.trim();
+  const existing = plain(q("SELECT * FROM students WHERE contact_id = ? AND name = ?").get(ref.contactId, name));
+  if (existing) return { student: existing };
+  return {
+    student: null,
+    create: () => {
+      const { lastInsertRowid } = q("INSERT INTO students (contact_id, name, grade, school) VALUES (?, ?, ?, ?)")
+        .run(ref.contactId, name, ref.grade ?? null, ref.school ?? null);
+      return getStudent(Number(lastInsertRowid));
+    },
+  };
 }
 
 // ---------- Enrollments ----------
 
-// Returns { ok, reason?, enrollment? }. A full class or a duplicate is refused.
-function enroll(studentId, classId) {
+// Returns { ok, reason?, enrollment?, student? }. Refused for a full class, unknown class or duplicate.
+function enroll(studentRef, classId) {
   return transaction(() => {
+    const { student: existing, create } = resolveStudentRef(studentRef);
     const cls = getClass(classId);
     if (!cls || !cls.active) return { ok: false, reason: "class_not_found" };
-    const existing = plain(q("SELECT * FROM enrollments WHERE student_id = ? AND class_id = ?").get(studentId, classId));
-    if (existing && existing.status !== "cancelled") return { ok: false, reason: "already_enrolled", enrollment: existing };
+    const prior = existing && plain(q("SELECT * FROM enrollments WHERE student_id = ? AND class_id = ?").get(existing.id, classId));
+    if (prior && prior.status !== "cancelled") return { ok: false, reason: "already_enrolled", enrollment: prior };
     if (cls.seats_left === 0) return { ok: false, reason: "class_full" };
-    if (existing) {
-      q("UPDATE enrollments SET status = 'pending', enrolled_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(existing.id);
+
+    const student = existing ?? create();
+    if (prior) {
+      q(`UPDATE enrollments SET status = 'pending', enrolled_at = ${NOW_SQL} WHERE id = ?`).run(prior.id);
     } else {
-      q("INSERT INTO enrollments (student_id, class_id) VALUES (?, ?)").run(studentId, classId);
+      q("INSERT INTO enrollments (student_id, class_id) VALUES (?, ?)").run(student.id, classId);
     }
-    return { ok: true, enrollment: plain(q("SELECT * FROM enrollments WHERE student_id = ? AND class_id = ?").get(studentId, classId)) };
+    const enrollment = plain(q("SELECT * FROM enrollments WHERE student_id = ? AND class_id = ?").get(student.id, classId));
+    return { ok: true, enrollment, student };
   });
 }
 
@@ -160,63 +260,125 @@ function listEnrollments(studentId) {
 
 // ---------- Schedule ----------
 
-// Class sessions in the next `days` days for the given classes, with holidays
-// and reschedules applied. Sorted by date and time.
-function upcomingSessions(classIds, { days = 7, now = new Date() } = {}) {
-  if (!classIds.length) return [];
-  const tz = getTutor()?.timezone || "Asia/Colombo";
-  const today = localNow(tz, now);
-  const end = addDays(today.date, days);
-  const sessions = [];
-
-  for (const id of classIds) {
-    const cls = getClass(id);
-    if (!cls?.active) continue;
-    const exceptions = new Map(
-      q("SELECT * FROM class_exceptions WHERE class_id = ?").all(id).map((e) => [e.date, plain(e)]),
-    );
-    for (let i = 0; i < days; i++) {
-      const date = addDays(today.date, i);
-      if (isoDayOfWeek(date) !== cls.day_of_week) continue;
-      const ex = exceptions.get(date);
-      const s = { class_id: id, title: cls.title, subject_name: cls.subject_name, mode: cls.mode,
-                  location: cls.location, date, time: cls.start_time, duration_minutes: cls.duration_minutes,
-                  status: "scheduled", note: null };
-      if (ex?.status === "cancelled") Object.assign(s, { status: "cancelled", note: ex.note });
-      if (ex?.status === "rescheduled") {
-        Object.assign(s, { status: "rescheduled", date: ex.new_date || date, time: ex.new_time || s.time,
-                           note: ex.note, original_date: date });
-      }
-      sessions.push(s);
+// Sessions of one class whose (actual) date is in [from, to), with cancellations and
+// reschedules applied. Rescheduled sessions carry original_date.
+function sessionsForClass(cls, from, to) {
+  const exceptions = new Map(
+    q("SELECT * FROM class_exceptions WHERE class_id = ?").all(cls.id).map((e) => [e.date, plain(e)]),
+  );
+  const base = { class_id: cls.id, title: cls.title, subject_name: cls.subject_name, mode: cls.mode,
+                 location: cls.location, duration_minutes: cls.duration_minutes };
+  const out = [];
+  // Look back/ahead a few weeks so sessions moved across the window edge are included.
+  for (let date = addDays(from, -28); date < addDays(to, 28); date = addDays(date, 1)) {
+    if (isoDayOfWeek(date) !== cls.day_of_week) continue;
+    const ex = exceptions.get(date);
+    let s = { ...base, date, time: cls.start_time, status: "scheduled", note: null };
+    if (ex?.status === "cancelled") s = { ...s, status: "cancelled", note: ex.note };
+    if (ex?.status === "rescheduled") {
+      s = { ...s, status: "rescheduled", date: ex.new_date || date, time: ex.new_time || cls.start_time,
+            note: ex.note, original_date: date };
     }
-    // Sessions moved into this window from a date outside it.
-    for (const ex of exceptions.values()) {
-      if (ex.status === "rescheduled" && ex.new_date && ex.new_date >= today.date && ex.new_date < end
-          && !(ex.date >= today.date && ex.date < end)) {
-        sessions.push({ class_id: id, title: cls.title, subject_name: cls.subject_name, mode: cls.mode,
-                        location: cls.location, date: ex.new_date, time: ex.new_time || cls.start_time,
-                        duration_minutes: cls.duration_minutes, status: "rescheduled", note: ex.note,
-                        original_date: ex.date });
-      }
-    }
+    if (s.date >= from && s.date < to) out.push(s);
   }
-  // Drop sessions that already ended today.
+  return out;
+}
+
+// Class sessions in the next `days` days for the given classes. Sorted by date and time.
+function upcomingSessions(classIds, { days = 7, now = new Date() } = {}) {
+  const today = tutorNow(now);
+  const sessions = classIds
+    .map(getClass)
+    .filter((c) => c?.active)
+    .flatMap((c) => sessionsForClass(c, today.date, addDays(today.date, days)));
   return sessions
     .filter((s) => s.date > today.date || s.time >= today.time || s.status === "cancelled")
     .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
 }
 
+// ---------- Trials (one session of a group class) ----------
+
+// Book a trial of class `classId` on `date` (the date the session actually runs).
+// Returns { ok, reason?, trial?, student?, moved_to? }.
+function bookTrial(studentRef, classId, date, { now = new Date() } = {}) {
+  return transaction(() => {
+    const { student: existing, create } = resolveStudentRef(studentRef);
+    const cls = getClass(classId);
+    if (!cls || !cls.active) return { ok: false, reason: "class_not_found" };
+    if (!isDate(date)) return { ok: false, reason: "invalid_date" };
+
+    const ex = plain(q("SELECT * FROM class_exceptions WHERE class_id = ? AND date = ?").get(classId, date));
+    const session = sessionsForClass(cls, date, addDays(date, 1))[0];
+    if (ex?.status === "cancelled") return { ok: false, reason: "session_cancelled", note: ex.note };
+    if (ex?.status === "rescheduled" && (ex.new_date || date) !== date) {
+      return { ok: false, reason: "session_rescheduled", moved_to: { date: ex.new_date, time: ex.new_time || cls.start_time } };
+    }
+    if (!session || session.status === "cancelled") return { ok: false, reason: "no_session_on_date" };
+
+    const today = tutorNow(now);
+    if (session.date < today.date || (session.date === today.date && session.time <= today.time)) {
+      return { ok: false, reason: "in_past" };
+    }
+    if (cls.seats_left === 0) return { ok: false, reason: "class_full" };
+    if (existing) {
+      const enrolled = q("SELECT 1 FROM enrollments WHERE student_id = ? AND class_id = ? AND status != 'cancelled'").get(existing.id, classId);
+      if (enrolled) return { ok: false, reason: "already_enrolled" };
+      const live = q("SELECT 1 FROM trials WHERE student_id = ? AND class_id = ? AND status != 'cancelled'").get(existing.id, classId);
+      if (live) return { ok: false, reason: "trial_exists" };
+    }
+
+    const student = existing ?? create();
+    const { lastInsertRowid } = q("INSERT INTO trials (student_id, class_id, date) VALUES (?, ?, ?)")
+      .run(student.id, classId, session.date);
+    return { ok: true, trial: { ...getTrial(Number(lastInsertRowid)), time: session.time }, student };
+  });
+}
+
+function getTrial(id) {
+  return plain(q(`SELECT t.*, c.title AS class_title, c.start_time, c.location FROM trials t
+                  JOIN classes c ON c.id = t.class_id WHERE t.id = ?`).get(id));
+}
+
+function listTrials(studentId) {
+  return q(`SELECT t.*, c.title AS class_title FROM trials t JOIN classes c ON c.id = t.class_id
+            WHERE t.student_id = ? ORDER BY t.date`).all(studentId).map(plain);
+}
+
+function setTrialStatus(id, status) {
+  return q("UPDATE trials SET status = ? WHERE id = ?").run(status, id).changes > 0;
+}
+
 // ---------- Payments ----------
 
+const PAYMENT_SELECT = `
+  SELECT p.*, c.title AS class_title, st.name AS student_name, st.contact_id
+  FROM payments p JOIN classes c ON c.id = p.class_id JOIN students st ON st.id = p.student_id`;
+
+function getPayment(id) {
+  return plain(q(`${PAYMENT_SELECT} WHERE p.id = ?`).get(id));
+}
+
 function listPayments(studentId, { status } = {}) {
-  const sql = `
-    SELECT p.*, c.title AS class_title FROM payments p JOIN classes c ON c.id = p.class_id
-    WHERE p.student_id = ? ${status ? "AND p.status = ?" : ""} ORDER BY p.month, c.title`;
+  const sql = `${PAYMENT_SELECT} WHERE p.student_id = ? ${status ? "AND p.status = ?" : ""} ORDER BY p.month, c.title`;
   return (status ? q(sql).all(studentId, status) : q(sql).all(studentId)).map(plain);
 }
 
+// All payments for every student of a contact (a parent pays for each child).
+function listPaymentsForContact(contactId, { status } = {}) {
+  const sql = `${PAYMENT_SELECT} WHERE st.contact_id = ? ${status ? "AND p.status = ?" : ""} ORDER BY p.month, st.name, c.title`;
+  return (status ? q(sql).all(contactId, status) : q(sql).all(contactId)).map(plain);
+}
+
+// Still owed: due, or rejected and not yet re-sent. Slips awaiting review are not counted.
+const OWED = "status IN ('due', 'rejected')";
+
 function amountDue(studentId) {
-  return q("SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE student_id = ? AND status = 'due'").get(studentId).total;
+  return q(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE student_id = ? AND ${OWED}`).get(studentId).total;
+}
+
+function amountDueForContact(contactId) {
+  return q(`SELECT COALESCE(SUM(p.amount), 0) AS total FROM payments p JOIN students st ON st.id = p.student_id
+            WHERE st.contact_id = ? AND p.${OWED}`).get(contactId).total;
 }
 
 // Create this month's fee rows for every active enrollment (safe to run repeatedly).
@@ -229,18 +391,60 @@ function generateMonthlyFees(month) {
     ON CONFLICT(student_id, class_id, month) DO NOTHING`).run(month).changes;
 }
 
-function markPaid(paymentId, reference) {
-  return q(`UPDATE payments SET status = 'paid', paid_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'), reference = ?
-            WHERE id = ? AND status = 'due'`).run(reference ?? null, paymentId).changes > 0;
+// A slip image arrived for one or more payments (one transfer often covers several).
+// Allowed from 'due' or 'rejected'. All-or-nothing: returns { ok, reason?, paymentId? }.
+function submitSlip(paymentIds, { mediaId, reference } = {}) {
+  const ids = [].concat(paymentIds);
+  if (!mediaId) throw new Error("submitSlip needs the slip's mediaId");
+  return transaction(() => {
+    for (const id of ids) {
+      const p = getPayment(id);
+      if (!p) return { ok: false, reason: "payment_not_found", paymentId: id };
+      if (!["due", "rejected"].includes(p.status)) return { ok: false, reason: `not_awaiting_slip:${p.status}`, paymentId: id };
+    }
+    const stmt = q(`UPDATE payments SET status = 'slip_received', slip_media_id = ?, slip_reference = ?,
+                    slip_received_at = ${NOW_SQL}, reviewed_by = NULL, reviewed_at = NULL, review_note = NULL
+                    WHERE id = ?`);
+    for (const id of ids) stmt.run(mediaId, reference ?? null, id);
+    return { ok: true };
+  });
+}
+
+function listSlipsAwaitingReview() {
+  return q(`${PAYMENT_SELECT} WHERE p.status = 'slip_received' ORDER BY p.slip_received_at`).all().map(plain);
+}
+
+function review(paymentId, status, reviewer, note) {
+  if (!reviewer) throw new Error("A review needs the reviewer's name");
+  const changed = q(`UPDATE payments SET status = ?, reviewed_by = ?, reviewed_at = ${NOW_SQL}, review_note = ?
+                     WHERE id = ? AND status = 'slip_received'`).run(status, reviewer, note ?? null, paymentId).changes;
+  return changed ? { ok: true, payment: getPayment(paymentId) } : { ok: false, reason: "no_slip_to_review" };
+}
+
+const approvePayment = (paymentId, reviewer, note) => review(paymentId, "approved", reviewer, note);
+const rejectPayment = (paymentId, reviewer, reason) => {
+  if (!reason) throw new Error("Rejecting a slip needs a reason to tell the parent");
+  return review(paymentId, "rejected", reviewer, reason);
+};
+
+function waivePayment(paymentId, reviewer, note) {
+  const changed = q(`UPDATE payments SET status = 'waived', reviewed_by = ?, reviewed_at = ${NOW_SQL}, review_note = ?
+                     WHERE id = ? AND status IN ('due', 'rejected')`).run(reviewer, note ?? null, paymentId).changes;
+  return changed > 0;
 }
 
 // ---------- One-to-one bookings ----------
 
-function createBooking({ studentId, subjectId, startsAt, durationMinutes = 60, topic }) {
-  const { lastInsertRowid } = q(`
-    INSERT INTO bookings (student_id, subject_id, starts_at, duration_minutes, topic)
-    VALUES (?, ?, ?, ?, ?)`).run(studentId, subjectId, startsAt, durationMinutes, topic ?? null);
-  return getBooking(Number(lastInsertRowid));
+function createBooking({ student, subjectId, startsAt, durationMinutes = 60, topic }) {
+  return transaction(() => {
+    const { student: existing, create } = resolveStudentRef(student);
+    if (!q("SELECT 1 FROM subjects WHERE id = ?").get(subjectId)) return { ok: false, reason: "subject_not_found" };
+    const s = existing ?? create();
+    const { lastInsertRowid } = q(`
+      INSERT INTO bookings (student_id, subject_id, starts_at, duration_minutes, topic)
+      VALUES (?, ?, ?, ?, ?)`).run(s.id, subjectId, startsAt, durationMinutes, topic ?? null);
+    return { ok: true, booking: getBooking(Number(lastInsertRowid)), student: s };
+  });
 }
 
 function getBooking(id) {
@@ -248,9 +452,8 @@ function getBooking(id) {
                   WHERE b.id = ?`).get(id));
 }
 
-function listBookings(studentId, { upcomingOnly = true } = {}) {
-  const tz = getTutor()?.timezone || "Asia/Colombo";
-  const { date, time } = localNow(tz);
+function listBookings(studentId, { upcomingOnly = true, now = new Date() } = {}) {
+  const { date, time } = tutorNow(now);
   return q(`
     SELECT b.*, s.name AS subject_name FROM bookings b JOIN subjects s ON s.id = b.subject_id
     WHERE b.student_id = ? ${upcomingOnly ? "AND b.starts_at >= ? AND b.status IN ('requested','confirmed')" : ""}
@@ -263,7 +466,7 @@ function setBookingStatus(id, status) {
 
 // ---------- Materials & FAQs ----------
 
-// General materials plus those for classes the student is enrolled in.
+// General materials plus those for classes the student is actively enrolled in.
 function listMaterials(studentId) {
   return q(`
     SELECT m.*, c.title AS class_title FROM materials m LEFT JOIN classes c ON c.id = m.class_id
@@ -283,16 +486,16 @@ function findFaqs(text) {
 
 // ---------- Conversation state & message log ----------
 
-function getConversation(waId) {
-  const row = q("SELECT * FROM conversations WHERE wa_id = ?").get(waId);
-  return row ? { ...row, context: JSON.parse(row.context) } : { wa_id: waId, state: "idle", context: {} };
+function getConversation(contactId) {
+  const row = q("SELECT * FROM conversations WHERE contact_id = ?").get(contactId);
+  return row ? { ...row, context: JSON.parse(row.context) } : { contact_id: contactId, state: "idle", context: {} };
 }
 
-function setConversation(waId, state, context = {}) {
-  q(`INSERT INTO conversations (wa_id, state, context, updated_at)
-     VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-     ON CONFLICT(wa_id) DO UPDATE SET state = excluded.state, context = excluded.context,
-                                     updated_at = excluded.updated_at`).run(waId, state, JSON.stringify(context));
+function setConversation(contactId, state, context = {}) {
+  q(`INSERT INTO conversations (contact_id, state, context, updated_at) VALUES (?, ?, ?, ${NOW_SQL})
+     ON CONFLICT(contact_id) DO UPDATE SET state = excluded.state, context = excluded.context,
+                                          updated_at = excluded.updated_at`)
+    .run(contactId, state, JSON.stringify(context));
 }
 
 // Returns false if this message id was already logged (a webhook retry).
@@ -302,12 +505,15 @@ function logMessage({ id, waId, direction, type, body }) {
 }
 
 module.exports = {
-  open, close, transaction, localNow, DAY_NAMES,
+  open, close, resetSchema, transaction, localNow, addDays, DAY_NAMES,
   getTutor, listSubjects, listClasses, getClass, getIndividualRate, listAvailability,
-  getStudentByWaId, upsertStudent,
+  getContact, getContactByWaId, ensureContact, updateContact, setBotPaused,
+  getStudent, listStudents, updateStudent,
   enroll, setEnrollmentStatus, listEnrollments,
-  upcomingSessions,
-  listPayments, amountDue, generateMonthlyFees, markPaid,
+  upcomingSessions, sessionsForClass,
+  bookTrial, getTrial, listTrials, setTrialStatus,
+  getPayment, listPayments, listPaymentsForContact, amountDue, amountDueForContact, generateMonthlyFees,
+  submitSlip, listSlipsAwaitingReview, approvePayment, rejectPayment, waivePayment,
   createBooking, getBooking, listBookings, setBookingStatus,
   listMaterials, findFaqs,
   getConversation, setConversation, logMessage,

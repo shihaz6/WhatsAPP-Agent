@@ -18,7 +18,12 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 
 - [x] Send replies through the Graph API (`POST /{phone-number-id}/messages`): `whatsapp.js`
   - Marks incoming messages as read, replies quoting the original, ignores duplicate deliveries
-- [x] **Phase 2a – Data model** (`db/`): tutor, subjects, weekly classes (with cancellations/reschedules), students, enrollments, monthly payments, one-to-one bookings, availability, materials, FAQs, conversation state and a message log, on Node's built-in SQLite. `npm run seed` loads demo data.
+- [x] **Phase 2a – Data model** (`db/`), on Node's built-in SQLite:
+  - **Contacts vs students:** a contact is a WhatsApp number (parent or adult student) and is created on the first message; it holds the preferred language (`en`/`si`/`ta`) and a `bot_paused` flag for human handoff. Students belong to a contact (a parent can have several) and are created only when someone enrols, books a trial or books a one-to-one session.
+  - Tutor, subjects, weekly classes with cancellations/reschedules, enrollments, availability, materials, FAQs, conversation state and a message log
+  - **Payments** go `due → slip_received → approved`, or `→ rejected` (with reason) and back to `slip_received` when a new slip arrives; the slip image's media id, reviewer and review time are stored. One slip can cover several payments.
+  - **Trials:** one session of a group class on a specific date, refused for cancelled, moved, past or full sessions
+  - `npm run seed` loads demo data (refuses when `NODE_ENV=production`); `npm test` runs the data-model tests
 - [ ] **Phase 2b – Conversation flow** in `agent.js` (it currently echoes text messages back)
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
@@ -103,7 +108,9 @@ WhatsApp-Agent/
 ├── db/
 │   ├── schema.sql # Tables, constraints and indexes
 │   ├── index.js   # Data access functions used by the agent
-│   └── seed.js    # Demo tutor data (npm run seed; clears all tables first)
+│   └── seed.js    # Demo tutor data (npm run seed; drops and recreates all tables)
+├── test/
+│   └── db.test.js # Data model tests (npm test)
 ├── data/          # tutor.db lives here (gitignored)
 ├── package.json   # Project metadata and npm start script
 ├── .env.example   # Template for .env (copy and fill in; .env is gitignored)
