@@ -30,11 +30,17 @@ if (!APP_SECRET) {
 }
 
 const whatsapp = require("./whatsapp");
-const agent = require("./agent");
+const db = require("./db");
+const { createHandler } = require("./bot/handler");
 
 if (!whatsapp.isConfigured()) {
   console.warn("Warning: WHATSAPP_TOKEN or PHONE_NUMBER_ID is not set; replies are disabled.");
 }
+db.open();
+if (!db.getTutor()) {
+  console.warn("Warning: the database has no tutor yet. Run `npm run seed` for demo data.");
+}
+const bot = createHandler({ db, whatsapp });
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
@@ -53,42 +59,13 @@ function verifySignature(rawBody, header) {
 // Keep only object items, so malformed payloads can't throw or log junk.
 const asArray = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
 
-// Meta can deliver the same message more than once; remember recent IDs to reply only once.
-const seenMessageIds = new Set();
-const MAX_SEEN = 1000;
-
-function firstTime(id) {
-  if (seenMessageIds.has(id)) return false;
-  seenMessageIds.add(id);
-  if (seenMessageIds.size > MAX_SEEN) {
-    seenMessageIds.delete(seenMessageIds.values().next().value); // drop the oldest
-  }
-  return true;
-}
-
-async function replyTo(msg) {
-  if (!msg.id || !msg.from || !firstTime(msg.id)) return;
-  if (!whatsapp.isConfigured()) return;
-
-  const reply = agent.getReply(msg);
-  try {
-    await whatsapp.markAsRead(msg.id);
-    if (reply) {
-      await whatsapp.sendText(msg.from, reply, msg.id);
-      console.log(`Replied to ${msg.from}:`, reply);
-    }
-  } catch (err) {
-    console.error(`Failed to reply to ${msg.from}:`, err.message);
-  }
-}
-
 function handleEvent(body) {
   for (const entry of asArray(body?.entry)) {
     for (const change of asArray(entry?.changes)) {
       const value = change?.value ?? {};
       for (const msg of asArray(value.messages)) {
         console.log(`Message from ${msg?.from} (${msg?.type}):`, msg?.text?.body ?? msg);
-        replyTo(msg).catch((err) => console.error("Reply failed:", err)); // runs after the 200
+        bot.handleMessage(msg); // runs after the 200; logs its own errors
       }
       for (const status of asArray(value.statuses)) {
         console.log(`Status ${status?.status} for ${status?.id}`);

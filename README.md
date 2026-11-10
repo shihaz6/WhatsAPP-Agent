@@ -24,7 +24,13 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
   - **Payments** go `due → slip_received → approved`, or `→ rejected` (with reason) and back to `slip_received` when a new slip arrives; the slip image's media id, reviewer and review time are stored. One slip can cover several payments.
   - **Trials:** one session of a group class on a specific date, refused for cancelled, moved, past or full sessions
   - `npm run seed` loads demo data (refuses when `NODE_ENV=production`); `npm test` runs the data-model tests
-- [ ] **Phase 2b – Conversation flow** in `agent.js` (it currently echoes text messages back)
+- [ ] **Phase 2b – Conversation flow** (`bot/`), built and phone-tested one step at a time:
+  - [x] 1. Wiring and routing: each message is logged (duplicates dropped), gets a contact, is skipped if the contact is paused, and is routed by conversation state; typing `menu` always returns to the main menu. `npm run admin` shows, pauses, resumes or resets a contact.
+  - [ ] 2. Language choice (reply buttons) and main menu (list message)
+  - [ ] 3. Find a class
+  - [ ] 4. Book a trial and enrol
+  - [ ] 5. Pay fees with slip upload
+  - [ ] 6. My classes, FAQs and talk to the teacher
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
 
@@ -104,13 +110,19 @@ curl -X POST http://localhost:3000/webhook \
 WhatsApp-Agent/
 ├── server.js      # Webhook server: verification, signature check, event routing
 ├── whatsapp.js    # Graph API client: sendText, markAsRead
-├── agent.js       # Reply logic (currently an echo)
+├── bot/
+│   ├── handler.js # Per-message pipeline: log, contact, pause check, route, send
+│   ├── router.js  # Conversation state -> flow; "menu" resets
+│   └── flows/     # One file per flow (menu.js so far)
+├── scripts/
+│   └── admin.js   # npm run admin -- show|pause|resume|reset <number>
 ├── db/
 │   ├── schema.sql # Tables, constraints and indexes
 │   ├── index.js   # Data access functions used by the agent
 │   └── seed.js    # Demo tutor data (npm run seed; drops and recreates all tables)
 ├── test/
-│   └── db.test.js # Data model tests (npm test)
+│   ├── db.test.js # Data model tests (npm test)
+│   └── bot.test.js # Conversation wiring/routing tests
 ├── data/          # tutor.db lives here (gitignored)
 ├── package.json   # Project metadata and npm start script
 ├── .env.example   # Template for .env (copy and fill in; .env is gitignored)

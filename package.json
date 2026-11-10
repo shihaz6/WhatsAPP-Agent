@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node server.js",
     "seed": "node db/seed.js",
-    "test": "node --test"
+    "test": "node --test",
+    "admin": "node scripts/admin.js"
   }
 }

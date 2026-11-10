@@ -41,9 +41,15 @@ function sendText(to, body, replyTo) {
   });
 }
 
+// Send one reply produced by a flow. Only text so far; buttons and lists come in step 2.
+function send(to, reply) {
+  if (reply.type === "text") return sendText(to, reply.body);
+  throw new Error(`Unsupported reply type: ${reply.type}`);
+}
+
 // Mark an incoming message as read (blue ticks).
 function markAsRead(messageId) {
   return callMessagesApi({ status: "read", message_id: messageId });
 }
 
-module.exports = { isConfigured, sendText, markAsRead };
+module.exports = { isConfigured, send, sendText, markAsRead };
