@@ -16,9 +16,10 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 
 ## Next steps
 
-- [ ] Send replies through the Graph API (`POST /{phone-number-id}/messages`)
-- [ ] Add the agent logic (decide how to respond to incoming messages)
-- [ ] Load config from a `.env` file and add an `.env.example`
+- [x] Send replies through the Graph API (`POST /{phone-number-id}/messages`): `whatsapp.js`
+  - Marks incoming messages as read, replies quoting the original, ignores duplicate deliveries
+- [ ] Add real agent logic in `agent.js` (it currently echoes text messages back)
+- [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
 
 ## Requirements
@@ -34,8 +35,20 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `PORT`         | No       | `3000`      | Port the server listens on                                    |
 | `VERIFY_TOKEN` | Yes      | none        | Any secret string. It must match the token set in the Meta console. The server won't start without it |
 | `APP_SECRET`   | No       | none        | Meta app secret. When set, the server checks request signatures. Leave unset only for local testing (a warning is printed) |
+| `WHATSAPP_TOKEN` | For replies | none    | Access token from **WhatsApp → API Setup** (temporary tokens expire after 24h; use a System User token for anything longer-lived) |
+| `PHONE_NUMBER_ID` | For replies | none   | Phone number ID from **WhatsApp → API Setup** (not the phone number itself) |
+| `GRAPH_API_VERSION` | No    | `v24.0`     | Graph API version used for sending                            |
+
+Put these in a `.env` file in the project root (copy `.env.example`). The server loads it at startup (Node 20.12+). The file is gitignored, so secrets stay out of the repo. Variables set in the shell override the file.
 
 ## Running locally
+
+With a filled-in `.env`:
+```bash
+npm start
+```
+
+Or pass the variables directly:
 
 **PowerShell**
 ```powershell
@@ -71,7 +84,8 @@ The server starts at `http://localhost:3000/webhook`.
 # Verification check (should print 12345)
 curl "http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=your-secret&hub.challenge=12345"
 
-# Simulated incoming message (leave APP_SECRET unset, because this request has no signature)
+# Simulated incoming message. This request has no signature, so it returns 401
+# while APP_SECRET is set. To try it, comment out APP_SECRET in .env first.
 curl -X POST http://localhost:3000/webhook \
   -H "Content-Type: application/json" \
   -d '{"entry":[{"changes":[{"value":{"messages":[{"from":"94771234567","type":"text","text":{"body":"hello"}}]}}]}]}'
@@ -81,8 +95,11 @@ curl -X POST http://localhost:3000/webhook \
 
 ```
 WhatsApp-Agent/
-├── server.js      # Webhook server
+├── server.js      # Webhook server: verification, signature check, event routing
+├── whatsapp.js    # Graph API client: sendText, markAsRead
+├── agent.js       # Reply logic (currently an echo)
 ├── package.json   # Project metadata and npm start script
+├── .env.example   # Template for .env (copy and fill in; .env is gitignored)
 ├── .gitignore     # Files git should not track
 └── README.md
 ```
