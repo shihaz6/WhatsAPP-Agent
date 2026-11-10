@@ -1,11 +1,9 @@
 // The pipeline every incoming WhatsApp message goes through:
-//   log (and drop duplicates) -> ensure contact -> skip if paused -> load state
-//   -> route to a flow -> save state -> mark read -> send replies -> log replies
-// db and whatsapp are passed in so tests can run it without a network.
+//   log (and drop duplicates) -> ensure contact -> skip if paused -> mark read + "typing…"
+//   -> AI agent -> send replies -> log replies
+// db, whatsapp and agent are passed in so tests can run it without a network.
 
-const { route } = require("./router");
-
-// Reduce a raw webhook message to what the flows need.
+// Reduce a raw webhook message to what the agent needs.
 function normalize(msg) {
   return {
     id: msg.id,
@@ -15,9 +13,9 @@ function normalize(msg) {
   };
 }
 
-function createHandler({ db, whatsapp, log = console }) {
-  // Messages from one person are handled one at a time, in arrival order, so two quick
-  // messages can't both read the same conversation state and overwrite each other.
+function createHandler({ db, whatsapp, agent, log = console }) {
+  // Messages from one person are handled one at a time, in arrival order, so the agent
+  // always sees the previous reply in the history before answering the next message.
   const queues = new Map();
 
   function handleMessage(msg) {
@@ -48,19 +46,20 @@ function createHandler({ db, whatsapp, log = console }) {
       return { status: "paused" };
     }
 
-    const conversation = db.getConversation(contact.id);
-    const result = route({ db, contact, conversation, incoming });
-    db.setConversation(contact.id, result.state, result.context ?? {});
-
-    if (!whatsapp.isConfigured()) {
-      log.warn("WhatsApp is not configured; replies not sent:", result.replies);
-      return { status: "handled", ...result };
+    const configured = whatsapp.isConfigured();
+    if (configured) {
+      try {
+        await whatsapp.markAsRead(incoming.id, { typing: true });
+      } catch (err) {
+        log.error("Could not mark as read:", err.message);
+      }
     }
 
-    try {
-      await whatsapp.markAsRead(incoming.id);
-    } catch (err) {
-      log.error("Could not mark as read:", err.message);
+    const result = await agent.respond({ contact, incoming });
+
+    if (!configured) {
+      log.warn("WhatsApp is not configured; replies not sent:", result.replies);
+      return { status: "handled", ...result };
     }
     for (const reply of result.replies) {
       try {

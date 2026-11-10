@@ -41,15 +41,23 @@ function sendText(to, body, replyTo) {
   });
 }
 
-// Send one reply produced by a flow. Only text so far; buttons and lists come in step 2.
+// Send one reply produced by the agent. Only text so far; buttons and lists come in step 3.
 function send(to, reply) {
   if (reply.type === "text") return sendText(to, reply.body);
   throw new Error(`Unsupported reply type: ${reply.type}`);
 }
 
-// Mark an incoming message as read (blue ticks).
-function markAsRead(messageId) {
-  return callMessagesApi({ status: "read", message_id: messageId });
+// Mark an incoming message as read (blue ticks). With typing: true it also shows
+// "typing…" until the reply is sent (or ~25 s). If the typing indicator is refused,
+// fall back to a plain read receipt.
+async function markAsRead(messageId, { typing = false } = {}) {
+  const payload = { status: "read", message_id: messageId };
+  if (!typing) return callMessagesApi(payload);
+  try {
+    return await callMessagesApi({ ...payload, typing_indicator: { type: "text" } });
+  } catch {
+    return callMessagesApi(payload);
+  }
 }
 
 module.exports = { isConfigured, send, sendText, markAsRead };

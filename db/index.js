@@ -475,6 +475,16 @@ function listMaterials(studentId) {
     ORDER BY m.created_at DESC`).all(studentId).map(plain);
 }
 
+function listFaqs() {
+  return q("SELECT * FROM faqs ORDER BY id").all().map(plain);
+}
+
+// Recent messages with one WhatsApp number, oldest first (for the agent's chat history).
+function recentMessages(waId, limit = 16) {
+  return q(`SELECT id, direction, type, body, created_at FROM messages WHERE wa_id = ?
+            ORDER BY rowid DESC LIMIT ?`).all(waId, limit).map(plain).reverse();
+}
+
 // FAQs whose keywords appear in the text, best match first.
 function findFaqs(text) {
   const t = String(text).toLowerCase();
@@ -515,6 +525,6 @@ module.exports = {
   getPayment, listPayments, listPaymentsForContact, amountDue, amountDueForContact, generateMonthlyFees,
   submitSlip, listSlipsAwaitingReview, approvePayment, rejectPayment, waivePayment,
   createBooking, getBooking, listBookings, setBookingStatus,
-  listMaterials, findFaqs,
-  getConversation, setConversation, logMessage,
+  listMaterials, listFaqs, findFaqs,
+  getConversation, setConversation, logMessage, recentMessages,
 };

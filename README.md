@@ -24,13 +24,13 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
   - **Payments** go `due → slip_received → approved`, or `→ rejected` (with reason) and back to `slip_received` when a new slip arrives; the slip image's media id, reviewer and review time are stored. One slip can cover several payments.
   - **Trials:** one session of a group class on a specific date, refused for cancelled, moved, past or full sessions
   - `npm run seed` loads demo data (refuses when `NODE_ENV=production`); `npm test` runs the data-model tests
-- [ ] **Phase 2b – Conversation flow** (`bot/`), built and phone-tested one step at a time:
-  - [x] 1. Wiring and routing: each message is logged (duplicates dropped), gets a contact, is skipped if the contact is paused, and is routed by conversation state; typing `menu` always returns to the main menu. `npm run admin` shows, pauses, resumes or resets a contact.
-  - [ ] 2. Language choice (reply buttons) and main menu (list message)
-  - [ ] 3. Find a class
-  - [ ] 4. Book a trial and enrol
-  - [ ] 5. Pay fees with slip upload
-  - [ ] 6. My classes, FAQs and talk to the teacher
+- [ ] **Phase 2b – AI agent** (`bot/`, `ai/`): a Groq model runs the whole conversation and reaches the data only through tools scoped to the sender. Built and phone-tested one step at a time:
+  - [x] 1. Wiring: each message is logged (duplicates dropped), gets a contact, is skipped if the contact is paused; one message per person at a time. `npm run admin` shows, pauses, resumes or resets a contact.
+  - [x] 2. Groq client, agent loop with chat history, and read-only tools (classes with next sessions, schedule, FAQs, one-to-one info, my family, my fees, my materials)
+  - [ ] 3. Language handling and interactive replies (buttons, lists)
+  - [ ] 4. Write tools with confirmation: trials, enrolment, one-to-one bookings, "which child?"
+  - [ ] 5. Payment slip images
+  - [ ] 6. Talk to the teacher (handoff), memory notes, test conversations
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
 
@@ -50,6 +50,9 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `WHATSAPP_TOKEN` | For replies | none    | Access token from **WhatsApp → API Setup** (temporary tokens expire after 24h; use a System User token for anything longer-lived) |
 | `PHONE_NUMBER_ID` | For replies | none   | Phone number ID from **WhatsApp → API Setup** (not the phone number itself) |
 | `GRAPH_API_VERSION` | No    | `v24.0`     | Graph API version used for sending                            |
+| `GROQ_API_KEY` | For AI replies | none  | Groq API key. Without it the bot only sends a "having trouble" message |
+| `GROQ_MODEL`   | No       | `openai/gpt-oss-120b` | Groq model used by the agent                        |
+| `GROQ_REASONING_EFFORT` | No | Groq default | `low`/`medium`/`high` for gpt-oss models. `low` was tested and made the agent skip tools and invent classes |
 
 Put these in a `.env` file in the project root (copy `.env.example`). The server loads it at startup (Node 20.12+). The file is gitignored, so secrets stay out of the repo. Variables set in the shell override the file.
 
@@ -110,10 +113,12 @@ curl -X POST http://localhost:3000/webhook \
 WhatsApp-Agent/
 ├── server.js      # Webhook server: verification, signature check, event routing
 ├── whatsapp.js    # Graph API client: sendText, markAsRead
+├── ai/
+│   └── groq.js    # Groq chat client (retries rate limits)
 ├── bot/
-│   ├── handler.js # Per-message pipeline: log, contact, pause check, route, send
-│   ├── router.js  # Conversation state -> flow; "menu" resets
-│   └── flows/     # One file per flow (menu.js so far)
+│   ├── handler.js # Per-message pipeline: log, contact, pause check, typing, agent, send
+│   ├── agent.js   # System prompt, chat history, tool-calling loop, fallback
+│   └── tools.js   # The agent's only access to data, scoped to the sender
 ├── scripts/
 │   └── admin.js   # npm run admin -- show|pause|resume|reset <number>
 ├── db/
@@ -122,7 +127,9 @@ WhatsApp-Agent/
 │   └── seed.js    # Demo tutor data (npm run seed; drops and recreates all tables)
 ├── test/
 │   ├── db.test.js # Data model tests (npm test)
-│   └── bot.test.js # Conversation wiring/routing tests
+│   ├── bot.test.js   # Message pipeline tests
+│   ├── agent.test.js # Agent loop, tools and scoping (scripted fake model)
+│   └── groq.test.js  # Groq client retries (fake fetch)
 ├── data/          # tutor.db lives here (gitignored)
 ├── package.json   # Project metadata and npm start script
 ├── .env.example   # Template for .env (copy and fill in; .env is gitignored)

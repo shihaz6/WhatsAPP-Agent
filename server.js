@@ -32,6 +32,8 @@ if (!APP_SECRET) {
 const whatsapp = require("./whatsapp");
 const db = require("./db");
 const { createHandler } = require("./bot/handler");
+const { createAgent } = require("./bot/agent");
+const { createGroqClient } = require("./ai/groq");
 
 if (!whatsapp.isConfigured()) {
   console.warn("Warning: WHATSAPP_TOKEN or PHONE_NUMBER_ID is not set; replies are disabled.");
@@ -40,7 +42,13 @@ db.open();
 if (!db.getTutor()) {
   console.warn("Warning: the database has no tutor yet. Run `npm run seed` for demo data.");
 }
-const bot = createHandler({ db, whatsapp });
+const llm = createGroqClient();
+if (!llm.isConfigured()) {
+  console.warn("Warning: GROQ_API_KEY is not set; the agent will only send its fallback message.");
+}
+const agent = createAgent({ db, llm });
+const bot = createHandler({ db, whatsapp, agent });
+console.log(`AI model: ${llm.model}`);
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
