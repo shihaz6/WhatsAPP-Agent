@@ -6,21 +6,52 @@ const http = require("node:http");
 const crypto = require("node:crypto");
 
 const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "change-me";
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const APP_SECRET = process.env.APP_SECRET; // optional: enables signature check
+const MAX_BODY_BYTES = 1024 * 1024; // 1 MB; Meta webhook payloads are far smaller
+
+if (!VERIFY_TOKEN) {
+  console.error("VERIFY_TOKEN is not set. Set it to the token configured in the Meta console.");
+  process.exit(1);
+}
+if (!APP_SECRET) {
+  console.warn("Warning: APP_SECRET is not set; request signatures will NOT be checked.");
+}
+
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
 
 function verifySignature(rawBody, header) {
   if (!APP_SECRET) return true;
   if (!header) return false;
   const expected =
     "sha256=" + crypto.createHmac("sha256", APP_SECRET).update(rawBody).digest("hex");
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  return safeEqual(header, expected);
+}
+
+// Keep only object items, so malformed payloads can't throw or log junk.
+const asArray = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
+
+function handleEvent(body) {
+  for (const entry of asArray(body?.entry)) {
+    for (const change of asArray(entry?.changes)) {
+      const value = change?.value ?? {};
+      for (const msg of asArray(value.messages)) {
+        console.log(`Message from ${msg?.from} (${msg?.type}):`, msg?.text?.body ?? msg);
+      }
+      for (const status of asArray(value.statuses)) {
+        console.log(`Status ${status?.status} for ${status?.id}`);
+      }
+    }
+  }
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // Fixed base: the Host header is client-controlled and may not form a valid URL.
+  const url = new URL(req.url, "http://localhost");
 
   if (url.pathname !== "/webhook") {
     res.writeHead(404).end("Not found");
@@ -31,9 +62,9 @@ const server = http.createServer((req, res) => {
     const mode = url.searchParams.get("hub.mode");
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
-    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    if (mode === "subscribe" && token !== null && safeEqual(token, VERIFY_TOKEN)) {
       console.log("Webhook verified");
-      res.writeHead(200, { "Content-Type": "text/plain" }).end(challenge);
+      res.writeHead(200, { "Content-Type": "text/plain" }).end(challenge ?? "");
     } else {
       res.writeHead(403).end("Forbidden");
     }
@@ -42,8 +73,28 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST") {
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
+    let size = 0;
+    let aborted = false;
+
+    req.on("error", (err) => {
+      aborted = true;
+      console.error("Request error:", err.message);
+    });
+
+    req.on("data", (c) => {
+      if (aborted) return;
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        aborted = true;
+        res.writeHead(413, { Connection: "close" }).end("Payload too large");
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+
     req.on("end", () => {
+      if (aborted) return;
       const raw = Buffer.concat(chunks);
       if (!verifySignature(raw, req.headers["x-hub-signature-256"])) {
         res.writeHead(401).end("Invalid signature");
@@ -60,16 +111,10 @@ const server = http.createServer((req, res) => {
       // Acknowledge quickly; Meta retries if it doesn't get a 200.
       res.writeHead(200).end("EVENT_RECEIVED");
 
-      for (const entry of body.entry ?? []) {
-        for (const change of entry.changes ?? []) {
-          const value = change.value ?? {};
-          for (const msg of value.messages ?? []) {
-            console.log(`Message from ${msg.from} (${msg.type}):`, msg.text?.body ?? msg);
-          }
-          for (const status of value.statuses ?? []) {
-            console.log(`Status ${status.status} for ${status.id}`);
-          }
-        }
+      try {
+        handleEvent(body);
+      } catch (err) {
+        console.error("Failed to process event:", err);
       }
     });
     return;

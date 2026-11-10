@@ -8,7 +8,8 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
   - `GET /webhook`: answers Meta's verification check (`hub.mode`, `hub.verify_token`, `hub.challenge`)
   - `POST /webhook`: receives events, replies `200` right away (Meta resends events that aren't acknowledged), and logs incoming messages and status updates
   - Optional request signature check using `X-Hub-Signature-256` when `APP_SECRET` is set
-  - Returns `400` for bad JSON, `401` for a bad signature, `403` for a wrong verify token, `404` for unknown paths and `405` for unsupported methods
+  - Returns `400` for bad JSON, `401` for a bad signature, `403` for a wrong verify token, `404` for unknown paths, `405` for unsupported methods and `413` for bodies over 1 MB
+  - Payloads with an unexpected shape are ignored instead of crashing the server
 - [x] **`package.json`** with an `npm start` script
 - [x] **`.gitignore`** covering secrets (`.env*`), `node_modules`, logs, build output, ngrok config and OS/editor files
 - [x] Local smoke test passed for verification (pass and fail cases) and for receiving a text message
@@ -31,8 +32,8 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | Variable       | Required | Default     | Description                                                   |
 | -------------- | -------- | ----------- | ------------------------------------------------------------- |
 | `PORT`         | No       | `3000`      | Port the server listens on                                    |
-| `VERIFY_TOKEN` | Yes      | `change-me` | Any secret string. It must match the token set in the Meta console |
-| `APP_SECRET`   | No       | none        | Meta app secret. When set, the server checks request signatures |
+| `VERIFY_TOKEN` | Yes      | none        | Any secret string. It must match the token set in the Meta console. The server won't start without it |
+| `APP_SECRET`   | No       | none        | Meta app secret. When set, the server checks request signatures. Leave unset only for local testing (a warning is printed) |
 
 ## Running locally
 
