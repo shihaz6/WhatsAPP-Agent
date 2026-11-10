@@ -34,3 +34,6 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Local database (recreate with: npm run seed)
+data/

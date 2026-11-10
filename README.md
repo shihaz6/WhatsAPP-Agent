@@ -18,13 +18,14 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 
 - [x] Send replies through the Graph API (`POST /{phone-number-id}/messages`): `whatsapp.js`
   - Marks incoming messages as read, replies quoting the original, ignores duplicate deliveries
-- [ ] Add real agent logic in `agent.js` (it currently echoes text messages back)
+- [x] **Phase 2a – Data model** (`db/`): tutor, subjects, weekly classes (with cancellations/reschedules), students, enrollments, monthly payments, one-to-one bookings, availability, materials, FAQs, conversation state and a message log, on Node's built-in SQLite. `npm run seed` loads demo data.
+- [ ] **Phase 2b – Conversation flow** in `agent.js` (it currently echoes text messages back)
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
 
 ## Requirements
 
-- Node.js 18 or newer (developed on Node 24)
+- Node.js 22.13 or newer, for the built-in `node:sqlite` (developed on Node 24)
 - A Meta developer app with the WhatsApp product added
 - A tunnel such as [ngrok](https://ngrok.com/) for local development
 
@@ -45,6 +46,7 @@ Put these in a `.env` file in the project root (copy `.env.example`). The server
 
 With a filled-in `.env`:
 ```bash
+npm run seed   # first time: create data/tutor.db with demo data
 npm start
 ```
 
@@ -98,6 +100,11 @@ WhatsApp-Agent/
 ├── server.js      # Webhook server: verification, signature check, event routing
 ├── whatsapp.js    # Graph API client: sendText, markAsRead
 ├── agent.js       # Reply logic (currently an echo)
+├── db/
+│   ├── schema.sql # Tables, constraints and indexes
+│   ├── index.js   # Data access functions used by the agent
+│   └── seed.js    # Demo tutor data (npm run seed; clears all tables first)
+├── data/          # tutor.db lives here (gitignored)
 ├── package.json   # Project metadata and npm start script
 ├── .env.example   # Template for .env (copy and fill in; .env is gitignored)
 ├── .gitignore     # Files git should not track
