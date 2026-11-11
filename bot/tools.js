@@ -128,7 +128,15 @@ function createTools({ db, contact, now = new Date() }) {
       run: () => {
         const seen = new Map();
         for (const s of students()) for (const m of db.listMaterials(s.id)) seen.set(m.id, m);
-        return [...seen.values()].map((m) => ({ title: m.title, kind: m.kind, url: m.url, class: m.class_title ?? "All students" }));
+        const enrolledIn = [...new Set(students().flatMap((s) =>
+          db.listEnrollments(s.id).filter((e) => e.status === "active").map((e) => e.title)))];
+        return {
+          materials: [...seen.values()].map((m) => ({ title: m.title, kind: m.kind, url: m.url, class: m.class_title ?? "All students" })),
+          active_classes: enrolledIn,
+          // Without this the model guesses why something is missing (seen: "the teacher will add it later").
+          note: "A class's notes, papers, recordings and links are shared only with students actively enrolled in that class. " +
+            "For any other class, materials come with enrolment; say that, and don't promise they will be added or sent.",
+        };
       },
     },
   };

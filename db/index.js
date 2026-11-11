@@ -544,6 +544,44 @@ function logMessage({ id, waId, direction, type, body }) {
             ON CONFLICT(id) DO NOTHING`).run(id, waId, direction, type, body ?? null).changes > 0;
 }
 
+// ---------- Dashboard (AlchemyX Catalyst) ----------
+
+// Every contact with their latest message, most recent chat first.
+function listConversations() {
+  return q(`
+    SELECT c.id, c.wa_id, c.name, c.kind, c.language, c.bot_paused, c.paused_reason, c.paused_at,
+           (SELECT COUNT(*) FROM students s WHERE s.contact_id = c.id) AS student_count,
+           m.body AS last_body, m.type AS last_type, m.direction AS last_direction, m.created_at AS last_at,
+           (SELECT COUNT(*) FROM messages x WHERE x.wa_id = c.wa_id) AS message_count
+    FROM contacts c
+    LEFT JOIN messages m ON m.rowid = (SELECT rowid FROM messages WHERE wa_id = c.wa_id ORDER BY rowid DESC LIMIT 1)
+    ORDER BY (m.created_at IS NULL), m.created_at DESC, c.id DESC`).all().map(plain);
+}
+
+// Who still owes money (due or rejected), per contact.
+function listOwedByContact() {
+  return q(`
+    SELECT c.id AS contact_id, c.wa_id, c.name, SUM(p.amount) AS total, COUNT(*) AS items
+    FROM payments p JOIN students st ON st.id = p.student_id JOIN contacts c ON c.id = st.contact_id
+    WHERE p.${OWED}
+    GROUP BY c.id ORDER BY total DESC`).all().map(plain);
+}
+
+function dashboardCounts(sinceIso) {
+  const one = (sql, ...args) => q(sql).get(...args).n;
+  return {
+    contacts: one("SELECT COUNT(*) AS n FROM contacts"),
+    students: one("SELECT COUNT(*) AS n FROM students"),
+    active_enrollments: one("SELECT COUNT(*) AS n FROM enrollments WHERE status = 'active'"),
+    paused: one("SELECT COUNT(*) AS n FROM contacts WHERE bot_paused = 1"),
+    messages_in_24h: one("SELECT COUNT(*) AS n FROM messages WHERE direction = 'in' AND created_at >= ?", sinceIso),
+    messages_out_24h: one("SELECT COUNT(*) AS n FROM messages WHERE direction = 'out' AND created_at >= ?", sinceIso),
+    slips_waiting: one("SELECT COUNT(*) AS n FROM payments WHERE status = 'slip_received'"),
+    owed_total: one(`SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE ${OWED}`),
+    languages: q("SELECT language, COUNT(*) AS n FROM contacts GROUP BY language ORDER BY n DESC").all().map(plain),
+  };
+}
+
 module.exports = {
   open, close, resetSchema, transaction, LANGUAGES, localNow, addDays, DAY_NAMES,
   getTutor, listSubjects, listClasses, getClass, getIndividualRate, listAvailability,
@@ -557,4 +595,5 @@ module.exports = {
   createBooking, getBooking, listBookings, setBookingStatus,
   listMaterials, listFaqs, findFaqs,
   getConversation, setConversation, logMessage, recentMessages,
+  listConversations, listOwedByContact, dashboardCounts,
 };

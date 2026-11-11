@@ -55,6 +55,7 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `GROQ_API_KEY` | For AI replies | none  | Groq API key. Without it the bot only sends a "having trouble" message |
 | `GROQ_MODEL`   | No       | `openai/gpt-oss-120b` | Groq model used by the agent                        |
 | `GROQ_REASONING_EFFORT` | No | Groq default | `low`/`medium`/`high` for gpt-oss models. `low` was tested and made the agent skip tools and invent classes |
+| `ADMIN_TOKEN`  | For the dashboard | none | Sign-in key for the AlchemyX Catalyst dashboard at `/admin`. Use a long random string. Without it the dashboard is switched off |
 
 Put these in a `.env` file in the project root (copy `.env.example`). The server loads it at startup (Node 20.12+). The file is gitignored, so secrets stay out of the repo. Variables set in the shell override the file.
 
@@ -79,6 +80,23 @@ VERIFY_TOKEN=your-secret APP_SECRET=your-app-secret npm start
 ```
 
 The server starts at `http://localhost:3000/webhook`.
+
+## AlchemyX Catalyst (tutor dashboard)
+
+A web dashboard for the tutor, served by the same server at `http://localhost:3000/admin/` (and through ngrok at `https://<your-ngrok-host>/admin/`). Built with React + TypeScript + Vite in `web/`; the API is `admin/api.js`.
+
+- **Overview:** messages in the last 24 hours, chats handed to the teacher, slips to review, money owed, this week's sessions (with cancellations), and each contact's language
+- **Conversations:** every chat, updated every few seconds, with filters by language and paused status. **Take over** pauses the bot so the teacher can reply from the dashboard (sent on WhatsApp from the business number); **Hand back to bot** resumes it. The language each contact uses can be changed here too
+- **Classes:** seats taken per class and the next two weeks of sessions
+- **Payments:** approve or reject slips (a rejection needs a reason, which the bot gives the parent when they ask about fees) and who still owes
+
+Every API call needs the `ADMIN_TOKEN` (you type it in to sign in; it is kept only for that browser tab).
+
+```bash
+npm run web:install   # first time
+npm run web:build     # build web/dist, then (re)start the server
+npm run web:dev       # or: live-reloading UI at http://localhost:5173/admin/ (needs npm start running)
+```
 
 ## Connecting to Meta
 

@@ -204,8 +204,13 @@ describe("tools are scoped to the contact", () => {
     assert.equal(run(PERERA, "get_tutor_info").name, "Mr. Nuwan Jayasekara");
     assert.equal(run(PERERA, "get_faqs").length, 8);
     assert.equal(run(PERERA, "get_one_to_one_info").rates[0].hourly_rate.startsWith("LKR"), true);
-    assert.ok(run(PERERA, "get_my_materials").some((m) => m.title.includes("Algebra")), "Kasun's Grade 10 material");
-    assert.ok(!run("94779990001", "get_my_materials").some((m) => m.class !== "All students"));
+    const perera = run(PERERA, "get_my_materials");
+    assert.ok(perera.materials.some((m) => m.title.includes("Algebra")), "Kasun's Grade 10 material");
+    assert.ok(perera.active_classes.includes("Grade 10 Maths – Theory"));
+    const stranger = run("94779990001", "get_my_materials");
+    assert.ok(!stranger.materials.some((m) => m.class !== "All students"));
+    assert.deepEqual(stranger.active_classes, []);
+    assert.match(stranger.note, /only with students actively enrolled/);
   });
 });
 
@@ -238,6 +243,14 @@ describe("language", () => {
     assert.match(first.messages.at(-1).content, /must come from a tool result/);
     // Tool rounds keep it in place (before the tool results, after the user's message).
     assert.ok(llm.requests[1].messages.some((m) => m.role === "system" && /Reply in Singlish/.test(m.content)));
+  });
+
+  test("Singlish/Tanglish phrasing notes go only to contacts who use them", () => {
+    const prompt = (language) => systemPrompt({ tutor: db.getTutor(), contact: { ...contact(FERNANDO), language }, students: [], now: NOW });
+    assert.match(prompt("singlish"), /"to know" is "dana ganna"/);
+    assert.doesNotMatch(prompt("singlish"), /Tanglish wording/);
+    assert.match(prompt("tanglish"), /Tanglish wording/);
+    assert.doesNotMatch(prompt("en"), /Singlish wording|Tanglish wording/);
   });
 
   test("the prompt says there is no menu", () => {

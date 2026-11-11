@@ -66,8 +66,24 @@ function languageRules(language) {
   - Tanglish (Tamil in English letters, e.g. "class eppo?", "fees evlo?") -> reply in Tanglish, in English letters, never Tamil script. E.g. "Grade 10 Maths class *Saturday 8.00 AM* ku irukku. Fees maasam *LKR 3,000*."
   - Mixed with English is normal: copy the user's mix. Common English words (class, fees, paper, exam, Zoom, online) stay in English.
   - If the latest message doesn't show a language ("ok", "thanks", an emoji, a name), use this contact's usual language: ${pref}.
-  - Keep class titles, student names, dates, times, amounts and links exactly as the tools give them; don't translate or transliterate them.`;
+  - Keep class titles, student names, dates, times, amounts and links exactly as the tools give them; don't translate or transliterate them.${PHRASING[language] ?? ""}`;
 }
+
+// Natural phrasing for romanized replies. The model's own Singlish/Tanglish drifts into odd or
+// wrong wording (seen: "thawa monawada danna oni?" = "what else should I add?" instead of
+// "do you need more info?"). Only sent to contacts who use that language, to save tokens.
+const PHRASING = {
+  singlish: `
+- Singlish wording: write like a friendly Sri Lankan texting, in plain English letters (no ā/ē marks).
+  - "danna" means "to put/add"; "to know" is "dana ganna". So: "Thawa visthara ona nam kiyanna." or "Wena monawa hari dana ganna ona da?", never "monawada danna oni?".
+  - thiyenawa = there is, naha = there isn't, puluwan = can, ona = need, oyaa = you, passe = after, kalin = before.
+  - Keep it simple: short sentences with English words for anything technical, as people really text.`,
+  tanglish: `
+- Tanglish wording: write like a friendly Sri Lankan Tamil speaker texting, in plain English letters.
+  - Closing line like: "Vera edhavadhu details venumna kelunga."
+  - irukku = there is, illa = there isn't, mudiyum = can, venum = need, neenga/unga = you (polite), appuram = after, munnadi = before.
+  - Keep it simple: short sentences with English words for anything technical, as people really text.`,
+};
 
 // Sent as the last message of every request: the chat history and tool results are mostly
 // English, and a rule buried in the system prompt loses to that (seen on the phone: a Singlish
@@ -77,7 +93,7 @@ const LANGUAGE_REMINDERS = {
   si: "Reply in Sinhala, in Sinhala script (සිංහල අකුරෙන්). Not English.",
   ta: "Reply in Tamil, in Tamil script (தமிழ் எழுத்தில்). Not English.",
   singlish: "Reply in Singlish: Sinhala sentences written in English letters. Not plain English, not Sinhala script. " +
-    'Like: "Ow, Grade 10 Maths class eka Saturday 8.00 ta thiyenawa. Fees masekata LKR 3,500. Wena class ekak gana danna ona nam kiyanna."',
+    'Like: "Ow, Grade 10 Maths class eka Saturday 8.00 ta thiyenawa. Fees masekata LKR 3,500. Thawa visthara ona nam kiyanna."',
   tanglish: "Reply in Tanglish: Tamil sentences written in English letters. Not plain English, not Tamil script. " +
     'Like: "Aama, Grade 10 Maths class Saturday 8.00 ku irukku. Fees maasam LKR 3,500. Vera class pathi theriyanum na kelunga."',
 };

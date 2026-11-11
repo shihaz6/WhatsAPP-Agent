@@ -10,6 +10,9 @@
     "start": "node server.js",
     "seed": "node db/seed.js",
     "test": "node --test",
-    "admin": "node scripts/admin.js"
+    "admin": "node scripts/admin.js",
+    "web:install": "npm --prefix web install",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build"
   }
 }

@@ -34,6 +34,7 @@ const db = require("./db");
 const { createHandler } = require("./bot/handler");
 const { createAgent } = require("./bot/agent");
 const { createGroqClient } = require("./ai/groq");
+const { createAdmin } = require("./admin/api");
 
 if (!whatsapp.isConfigured()) {
   console.warn("Warning: WHATSAPP_TOKEN or PHONE_NUMBER_ID is not set; replies are disabled.");
@@ -49,6 +50,10 @@ if (!llm.isConfigured()) {
 const agent = createAgent({ db, llm });
 const bot = createHandler({ db, whatsapp, agent });
 console.log(`AI model: ${llm.model}`);
+const admin = createAdmin({ db, whatsapp });
+if (!admin.isEnabled()) {
+  console.warn("Note: ADMIN_TOKEN is not set; the AlchemyX Catalyst dashboard (/admin) is switched off.");
+}
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
@@ -85,6 +90,8 @@ function handleEvent(body) {
 const server = http.createServer((req, res) => {
   // Fixed base: the Host header is client-controlled and may not form a valid URL.
   const url = new URL(req.url, "http://localhost");
+
+  if (admin.handle(req, res, url)) return;
 
   if (url.pathname !== "/webhook") {
     res.writeHead(404).end("Not found");
@@ -156,4 +163,7 @@ const server = http.createServer((req, res) => {
   res.writeHead(405).end("Method not allowed");
 });
 
-server.listen(PORT, () => console.log(`Webhook server listening on :${PORT}/webhook`));
+server.listen(PORT, () => {
+  console.log(`Webhook server listening on :${PORT}/webhook`);
+  if (admin.isEnabled()) console.log(`AlchemyX Catalyst dashboard: http://localhost:${PORT}/admin/`);
+});
