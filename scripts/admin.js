@@ -3,6 +3,7 @@
 //   npm run admin -- pause  <wa_id> [reason]   bot stops replying (human handoff)
 //   npm run admin -- resume <wa_id>            bot replies again
 //   npm run admin -- reset  <wa_id>            clear the conversation state
+//   npm run admin -- lang   <wa_id> <language> set the fallback language (en|si|ta|singlish|tanglish)
 // wa_id is the number as WhatsApp sends it: country code, no "+" or spaces (e.g. 94771234567).
 
 const path = require("node:path");
@@ -14,7 +15,7 @@ const db = require("../db");
 const [cmd, rawWaId, ...rest] = process.argv.slice(2);
 const waId = rawWaId?.replace(/[^\d]/g, "");
 const usage = () => {
-  console.log("Usage: npm run admin -- <show|pause|resume|reset> <wa_id> [reason]");
+  console.log("Usage: npm run admin -- <show|pause|resume|reset|lang> <wa_id> [reason|language]");
   process.exit(1);
 };
 if (!cmd || !waId) usage();
@@ -53,6 +54,16 @@ switch (cmd) {
     db.setConversation(contact.id, "idle", {});
     console.log(`Conversation reset for ${waId}.`);
     break;
+  case "lang": {
+    const language = rest[0]?.toLowerCase();
+    if (!db.LANGUAGES.includes(language)) {
+      console.error(`Language must be one of: ${db.LANGUAGES.join(", ")}`);
+      process.exit(1);
+    }
+    db.updateContact(contact.id, { language });
+    console.log(`Language for ${waId} set to ${language}. (It changes again when they write in another language.)`);
+    break;
+  }
   default:
     usage();
 }

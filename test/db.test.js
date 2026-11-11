@@ -79,6 +79,34 @@ describe("contacts and students", () => {
     assert.equal(db.getContactByWaId("94770000204").bot_paused, 1, "seed has a paused contact");
     assert.equal(db.getContactByWaId(PERERA).language, "si");
     assert.throws(() => db.updateContact(id, { language: "fr" }), /CHECK/);
+    for (const language of db.LANGUAGES) assert.equal(db.updateContact(id, { language }).language, language);
+  });
+
+  test("an old database whose contacts only allowed en/si/ta is migrated, keeping its data", () => {
+    const { DatabaseSync } = require("node:sqlite");
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tutor-")), "old.db");
+    const old = new DatabaseSync(file);
+    old.exec(fs.readFileSync(path.join(__dirname, "..", "db", "schema.sql"), "utf8")
+      .replace("'en', 'si', 'ta', 'singlish', 'tanglish'", "'en', 'si', 'ta'"));
+    old.exec("INSERT INTO contacts (id, wa_id, name, language) VALUES (1, '94771111111', 'Old Parent', 'si')");
+    old.exec("INSERT INTO students (contact_id, name) VALUES (1, 'Old Kid')");
+    assert.throws(() => old.exec("UPDATE contacts SET language = 'singlish'"), /CHECK/);
+    old.close();
+
+    db.close();
+    try {
+      db.open(file);
+      const c = db.getContactByWaId("94771111111");
+      assert.equal(c.language, "si");
+      assert.equal(db.updateContact(c.id, { language: "singlish" }).language, "singlish");
+      assert.deepEqual(db.listStudents(c.id).map((s) => s.name), ["Old Kid"]);
+      const fk = db.open().prepare("SELECT sql FROM sqlite_master WHERE name = 'students'").get().sql;
+      assert.match(fk, /REFERENCES contacts\(id\)/, "students still point at contacts");
+      assert.deepEqual(db.open().prepare("PRAGMA foreign_key_check").all(), []);
+    } finally {
+      db.close();
+      db.open(":memory:");
+    }
   });
 });
 

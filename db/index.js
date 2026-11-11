@@ -31,9 +31,39 @@ function open(file) {
   connect(file);
   if (!schemaApplied) {
     db.exec(fs.readFileSync(SCHEMA, "utf8"));
+    migrate(db);
     schemaApplied = true;
   }
   return db;
+}
+
+// Languages a contact can prefer. Keep in sync with the CHECK on contacts.language in schema.sql.
+const LANGUAGES = ["en", "si", "ta", "singlish", "tanglish"];
+
+// Bring an existing database up to date. CREATE TABLE IF NOT EXISTS doesn't change existing
+// tables, so a CHECK that grew needs the table rebuilt (SQLite can't alter a CHECK).
+function migrate(conn) {
+  const row = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'contacts'").get();
+  if (!row || row.sql.includes("'singlish'")) return;
+  const check = `CHECK (language IN (${LANGUAGES.map((l) => `'${l}'`).join(", ")}))`;
+  const ddl = row.sql
+    .replace(/CREATE TABLE (IF NOT EXISTS )?"?contacts"?/i, "CREATE TABLE contacts_new")
+    .replace(/CHECK \(language IN \([^)]*\)\)/, check);
+  // The official rebuild recipe: foreign keys off, build the new table, swap it in by name.
+  conn.exec("PRAGMA foreign_keys = OFF;");
+  try {
+    conn.exec("BEGIN");
+    conn.exec(ddl);
+    conn.exec("INSERT INTO contacts_new SELECT * FROM contacts");
+    conn.exec("DROP TABLE contacts");
+    conn.exec("ALTER TABLE contacts_new RENAME TO contacts");
+    conn.exec("COMMIT");
+  } catch (err) {
+    conn.exec("ROLLBACK");
+    throw err;
+  } finally {
+    conn.exec("PRAGMA foreign_keys = ON;");
+  }
 }
 
 function close() {
@@ -515,7 +545,7 @@ function logMessage({ id, waId, direction, type, body }) {
 }
 
 module.exports = {
-  open, close, resetSchema, transaction, localNow, addDays, DAY_NAMES,
+  open, close, resetSchema, transaction, LANGUAGES, localNow, addDays, DAY_NAMES,
   getTutor, listSubjects, listClasses, getClass, getIndividualRate, listAvailability,
   getContact, getContactByWaId, ensureContact, updateContact, setBotPaused,
   getStudent, listStudents, updateStudent,

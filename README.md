@@ -19,7 +19,7 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 - [x] Send replies through the Graph API (`POST /{phone-number-id}/messages`): `whatsapp.js`
   - Marks incoming messages as read, replies quoting the original, ignores duplicate deliveries
 - [x] **Phase 2a – Data model** (`db/`), on Node's built-in SQLite:
-  - **Contacts vs students:** a contact is a WhatsApp number (parent or adult student) and is created on the first message; it holds the preferred language (`en`/`si`/`ta`) and a `bot_paused` flag for human handoff. Students belong to a contact (a parent can have several) and are created only when someone enrols, books a trial or books a one-to-one session.
+  - **Contacts vs students:** a contact is a WhatsApp number (parent or adult student) and is created on the first message; it holds the preferred language (`en`, `si`/`ta` in their own script, or `singlish`/`tanglish` in English letters) and a `bot_paused` flag for human handoff. Students belong to a contact (a parent can have several) and are created only when someone enrols, books a trial or books a one-to-one session.
   - Tutor, subjects, weekly classes with cancellations/reschedules, enrollments, availability, materials, FAQs, conversation state and a message log
   - **Payments** go `due → slip_received → approved`, or `→ rejected` (with reason) and back to `slip_received` when a new slip arrives; the slip image's media id, reviewer and review time are stored. One slip can cover several payments.
   - **Trials:** one session of a group class on a specific date, refused for cancelled, moved, past or full sessions
@@ -28,6 +28,8 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
   - [x] 1. Wiring: each message is logged (duplicates dropped), gets a contact, is skipped if the contact is paused; one message per person at a time. `npm run admin` shows, pauses, resumes or resets a contact.
   - [x] 2. Groq client, agent loop with chat history, and read-only tools (classes with next sessions, schedule, FAQs, one-to-one info, my family, my fees, my materials)
   - [ ] 3. Language handling and interactive replies (buttons, lists)
+    - [x] Language: replies mirror the language *and script* of the latest message: English, Sinhala, Tamil, Singlish or Tanglish (`bot/language.js`). The detected language is saved on the contact, so "ok"/"thanks" keep it, and the fallback message is sent in it. `npm run admin -- lang <wa_id> <language>` sets it by hand.
+    - [ ] Interactive replies (buttons, lists)
   - [ ] 4. Write tools with confirmation: trials, enrolment, one-to-one bookings, "which child?"
   - [ ] 5. Payment slip images
   - [ ] 6. Talk to the teacher (handoff), memory notes, test conversations
@@ -120,7 +122,7 @@ WhatsApp-Agent/
 │   ├── agent.js   # System prompt, chat history, tool-calling loop, fallback
 │   └── tools.js   # The agent's only access to data, scoped to the sender
 ├── scripts/
-│   └── admin.js   # npm run admin -- show|pause|resume|reset <number>
+│   └── admin.js   # npm run admin -- show|pause|resume|reset|lang <number>
 ├── db/
 │   ├── schema.sql # Tables, constraints and indexes
 │   ├── index.js   # Data access functions used by the agent

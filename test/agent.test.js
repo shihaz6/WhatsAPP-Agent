@@ -7,7 +7,7 @@ const { test, beforeEach, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
 const { seed } = require("../db/seed");
-const { createAgent, systemPrompt, toWhatsApp, FALLBACK } = require("../bot/agent");
+const { createAgent, systemPrompt, toWhatsApp, FALLBACK, FALLBACKS } = require("../bot/agent");
 const { createTools } = require("../bot/tools");
 
 const NOW = new Date("2026-11-10T06:00:00Z"); // Tue 10 Nov 2026, 11:30 in Colombo
@@ -88,7 +88,7 @@ describe("agent loop", () => {
 
   test("an endless tool loop stops at the round limit with the fallback", async () => {
     const llm = scriptedLLM(Array(10).fill({ tools: [["list_classes", {}]] }));
-    const r = await agentWith(llm, { maxRounds: 3 }).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "x") });
+    const r = await agentWith(llm, { maxRounds: 3 }).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "x") });
     assert.equal(r.replies[0].body, FALLBACK);
     assert.equal(r.failed, true);
     assert.equal(llm.requests.length, 3);
@@ -96,13 +96,13 @@ describe("agent loop", () => {
 
   test("an LLM error (e.g. Groq down or rate limited) gives the fallback", async () => {
     const llm = scriptedLLM([new Error("Groq API 429: rate limit")]);
-    const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "x") });
+    const r = await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "x") });
     assert.equal(r.replies[0].body, FALLBACK);
     assert.equal(r.failed, true);
   });
 
   test("an empty answer gives the fallback", async () => {
-    const r = await agentWith(scriptedLLM(["   "])).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "x") });
+    const r = await agentWith(scriptedLLM(["   "])).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "x") });
     assert.equal(r.replies[0].body, FALLBACK);
   });
 });
@@ -206,6 +206,59 @@ describe("tools are scoped to the contact", () => {
     assert.equal(run(PERERA, "get_one_to_one_info").rates[0].hourly_rate.startsWith("LKR"), true);
     assert.ok(run(PERERA, "get_my_materials").some((m) => m.title.includes("Algebra")), "Kasun's Grade 10 material");
     assert.ok(!run("94779990001", "get_my_materials").some((m) => m.class !== "All students"));
+  });
+});
+
+describe("language", () => {
+  const RIZWAN = "94770000105"; // seeded with language "ta"
+  const lang = (waId) => db.getContactByWaId(waId).language;
+
+  test("the language they write in is saved on the contact and named in the prompt", async () => {
+    for (const [text, expected] of [
+      ["Grade 10 maths class eka kawadada?", "singlish"],
+      ["class eppo start aagum?", "tanglish"],
+      ["ගාස්තුව කීයද?", "si"],
+      ["வகுப்பு எப்போது?", "ta"],
+      ["What time is the class on Saturday?", "en"],
+    ]) {
+      const llm = scriptedLLM(["ok"]);
+      await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, text) });
+      assert.equal(lang(FERNANDO), expected, text);
+      assert.match(llm.requests[0].messages[0].content, new RegExp(`usual language: ${expected === "en" ? "English" : ""}`));
+    }
+  });
+
+  test("a message that doesn't show a language keeps the saved one", async () => {
+    await agentWith(scriptedLLM(["ok"])).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "fees kiyada sir?") });
+    for (const text of ["ok", "thanks", "👍", "Kasun", "hari"]) {
+      const llm = scriptedLLM(["ok"]);
+      await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, text) });
+      assert.equal(lang(FERNANDO), "singlish", text);
+      assert.match(llm.requests[0].messages[0].content, /usual language: Singlish/);
+    }
+  });
+
+  test("a photo (no text) keeps the saved language", async () => {
+    const msg = { id: "wamid.photo", from: RIZWAN, type: "image", text: null };
+    db.logMessage({ id: msg.id, waId: RIZWAN, direction: "in", type: "image", body: null });
+    await agentWith(scriptedLLM(["ok"])).respond({ contact: contact(RIZWAN), incoming: msg });
+    assert.equal(lang(RIZWAN), "ta");
+  });
+
+  test("the prompt asks to mirror language and script, with Singlish/Tanglish examples", () => {
+    const p = systemPrompt({ tutor: db.getTutor(), contact: contact(RIZWAN), students: [], now: NOW });
+    assert.match(p, /same language AND the same script/);
+    assert.match(p, /Singlish.*never Sinhala script/);
+    assert.match(p, /Tanglish.*never Tamil script/);
+    assert.match(p, /usual language: Tamil \(Tamil script\)/);
+  });
+
+  test("the fallback is sent in the contact's language", async () => {
+    const fail = () => scriptedLLM([new Error("Groq down")]);
+    const r1 = await agentWith(fail()).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "class eppo?") });
+    assert.equal(r1.replies[0].body, FALLBACKS.tanglish);
+    const r2 = await agentWith(fail()).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "ok") });
+    assert.equal(r2.replies[0].body, FALLBACKS.si, "Perera is seeded as Sinhala");
   });
 });
 

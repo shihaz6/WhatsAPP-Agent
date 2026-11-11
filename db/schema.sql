@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS contacts (
   wa_id         TEXT NOT NULL UNIQUE,     -- WhatsApp number (msg.from)
   name          TEXT,
   kind          TEXT CHECK (kind IN ('parent', 'student')),  -- NULL until known
-  language      TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'si', 'ta')),
+  -- en | si / ta (Sinhala / Tamil script) | singlish / tanglish (written in English letters)
+  language      TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'si', 'ta', 'singlish', 'tanglish')),
   bot_paused    INTEGER NOT NULL DEFAULT 0 CHECK (bot_paused IN (0, 1)),  -- human handoff
   paused_reason TEXT,
   paused_at     TEXT,
