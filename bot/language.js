@@ -25,6 +25,7 @@ const SINGLISH = new Set(`
   heta anidda iye pereda dan dawase dawasa
   labanne labenawa labeda gewanna gewwa gewala salli rupiyal
   sthuthi sthuthiy istuti isthuthi bohoma hondai hodai honda hoda
+  danna dannawa kiyanna balanna ona oney onna nam ithin ithing wenna wenne wena
   ow owu ov ehenam ehema mehema wage nisa passe kalin wela welawa welawata
   duwa putha daruwa lamaya lamai lamayata panthiya panthi pantiya
   ayyo aiyo machan malli nangi akka ayya sir-ge
@@ -43,6 +44,8 @@ const TANGLISH = new Set(`
   kidaikkuma kidaikum kidaikkum varuma varum vaanga vanga varen varalama poganum ponga
   naalai nalaiku naalaiku nalaikku inniki innaiku innikku indru ippo ippa appuram aprom
   panam kaasu kasu fees-ku sir-ku
+  venumna venumnaa kelunga kelikonga ketkalaam kekkalam solunga sollunga theriyanum theriyanumna pathi
+  inga anga edhavadhu ethavathu irundha irundhaa
   aagum agum aaguma aachu achu aayiduchu mudiyuma mudiyum mudiyala
 `.split(/\s+/).filter(Boolean));
 

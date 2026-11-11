@@ -131,7 +131,7 @@ describe("context sent to the model", () => {
     db.logMessage({ id: "h3", waId: PERERA, direction: "in", type: "image", body: null });
     const llm = scriptedLLM(["ok"]);
     await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "fees?") });
-    const convo = llm.requests[0].messages.slice(1).map((m) => [m.role, m.content]);
+    const convo = llm.requests[0].messages.slice(1, -1).map((m) => [m.role, m.content]);
     assert.deepEqual(convo, [["user", "hi"], ["assistant", "Hello!"], ["user", "[sent a photo]"], ["user", "fees?"]]);
   });
 
@@ -139,8 +139,8 @@ describe("context sent to the model", () => {
     for (let i = 0; i < 30; i++) db.logMessage({ id: `old${i}`, waId: PERERA, direction: "in", type: "text", body: `m${i}` });
     const llm = scriptedLLM(["ok"]);
     await agentWith(llm, { historyLimit: 5 }).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "latest") });
-    assert.equal(llm.requests[0].messages.length, 1 + 5);
-    assert.equal(llm.requests[0].messages.at(-1).content, "latest");
+    assert.equal(llm.requests[0].messages.length, 1 + 5 + 1);
+    assert.equal(llm.requests[0].messages.at(-2).content, "latest");
   });
 });
 
@@ -226,6 +226,22 @@ describe("language", () => {
       assert.equal(lang(FERNANDO), expected, text);
       assert.match(llm.requests[0].messages[0].content, new RegExp(`usual language: ${expected === "en" ? "English" : ""}`));
     }
+  });
+
+  test("every request ends with a reminder of the reply language, after the user's message", async () => {
+    const llm = scriptedLLM([{ tools: [["list_classes", {}]] }, "ok"]);
+    await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "mokakda class eka") });
+    const [first] = llm.requests;
+    assert.equal(first.messages.at(-2).content, "mokakda class eka");
+    assert.equal(first.messages.at(-1).role, "system");
+    assert.match(first.messages.at(-1).content, /Reply in Singlish/);
+    assert.match(first.messages.at(-1).content, /must come from a tool result/);
+    // Tool rounds keep it in place (before the tool results, after the user's message).
+    assert.ok(llm.requests[1].messages.some((m) => m.role === "system" && /Reply in Singlish/.test(m.content)));
+  });
+
+  test("the prompt says there is no menu", () => {
+    assert.match(systemPrompt({ tutor: db.getTutor(), contact: contact(FERNANDO), students: [], now: NOW }), /no menu/);
   });
 
   test("a message that doesn't show a language keeps the saved one", async () => {
