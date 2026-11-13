@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Catalyst — Train your AI</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .layout { display: grid; grid-template-columns: 1fr 392px; gap: 22px; flex: 1; min-height: 0; }
+  .left { display: flex; flex-direction: column; gap: 18px; min-height: 0; }
+
+  .progress { display: flex; flex-direction: row !important; align-items: center; gap: 22px; padding: 16px 20px; }
+  .progress .ring { width: 54px; height: 54px; border-radius: 50%; background: conic-gradient(var(--orange) 0 92%, var(--surface-3) 0); display: grid; place-items: center; flex: none; }
+  .progress .ring span { width: 42px; height: 42px; border-radius: 50%; background: var(--surface); display: grid; place-items: center; font-weight: 800; font-size: 13px; }
+  .progress .txt b { font-size: 15px; }
+  .progress .stats { margin-left: auto; display: flex; gap: 26px; }
+  .progress .stats div { text-align: right; }
+  .progress .stats b { display: block; font-size: 20px; font-weight: 750; }
+  .progress .stats span { color: var(--muted); font-size: 12px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 18px; flex: 1; min-height: 0; }
+  .grid > .card { overflow: hidden; }
+  .card { display: flex; flex-direction: column; min-height: 0; }
+  .card-body { padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; }
+
+  .svc { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--bg-1); border: 1px solid var(--line); }
+  .svc .n { font-weight: 600; }
+  .svc .d { color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 5px; }
+  .svc .d svg { width: 13px; height: 13px; }
+  .svc .p { font-weight: 750; color: var(--orange); font-size: 15px; min-width: 58px; text-align: right; }
+  .add { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 600; font-size: 13px; padding: 9px 12px; border: 1px dashed var(--line-2); border-radius: 10px; }
+  .add svg { width: 15px; height: 15px; }
+
+  .hours { display: grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center; padding: 4px 4px; border-bottom: 1px solid var(--line); }
+  .hours:last-child { border-bottom: 0; }
+  .hours .day { font-weight: 600; }
+  .hours .time { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+  .hours .time span { background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 2px 10px; color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .hours.closed .time { color: var(--dim); font-style: italic; }
+
+  .faq { padding: 11px 13px; border-radius: 10px; background: var(--bg-1); border: 1px solid var(--line); }
+  .faq .q { font-weight: 600; display: flex; gap: 8px; align-items: flex-start; }
+  .faq .q svg { width: 15px; height: 15px; color: var(--orange); margin-top: 2px; }
+  .faq .a { color: var(--muted); font-size: 13px; margin: 3px 0 0 23px; }
+
+  .tones { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tone { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--bg-1); }
+  .tone .t { font-weight: 650; display: flex; align-items: center; justify-content: space-between; }
+  .tone .e { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .tone.on { border-color: var(--orange); background: linear-gradient(180deg, rgba(255,107,26,0.12), rgba(255,107,26,0.03)); box-shadow: 0 0 0 3px rgba(255,107,26,0.12); }
+  .radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--dim); }
+  .tone.on .radio { border: 5px solid var(--orange); background: #fff; }
+  .setting { display: flex; align-items: center; justify-content: space-between; padding-top: 6px; font-size: 13.5px; }
+  .setting span { color: #d9dee3; }
+
+  /* Test chat */
+  .test { display: flex; flex-direction: column; overflow: hidden; }
+  .test-head { padding: 16px 18px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
+  .test-head .av { width: 38px; height: 38px; border-radius: 50%; background: linear-gradient(140deg, #ff8a3d, var(--orange)); display: grid; place-items: center; }
+  .test-head .av svg { width: 18px; height: 18px; fill: #fff; stroke: none; }
+  .test-head .nm { font-weight: 700; }
+  .test-head .sub { color: var(--green); font-size: 12px; }
+  .test-head .tag { margin-left: auto; }
+  .tmsgs { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 9px; justify-content: flex-end; background: #11161b;
+    background-image: radial-gradient(rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 18px 18px; }
+  .m { max-width: 300px; padding: 9px 13px; border-radius: 14px; font-size: 14px; line-height: 1.45; }
+  .m.u { align-self: flex-end; background: #005c4b; border-bottom-right-radius: 4px; }
+  .m.a { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
+  .m .src { margin-top: 7px; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--orange); background: var(--orange-soft); padding: 2px 8px; border-radius: 99px; }
+  .m .src svg { width: 11px; height: 11px; }
+  .m[dir="rtl"] { text-align: right; }
+  .typing { align-self: flex-start; background: var(--surface-2); padding: 10px 14px; border-radius: 14px; display: flex; gap: 4px; }
+  .typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .7; }
+  .typing i:nth-child(2) { opacity: .45; } .typing i:nth-child(3) { opacity: .25; }
+  .test-foot { padding: 14px 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; }
+  .test-foot .input { flex: 1; }
+  .test-foot .go { width: 40px; height: 40px; border-radius: 10px; background: var(--green); display: grid; place-items: center; color: #062612; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="nav" data-active="train"></div>
+  <div class="main">
+    <div class="page-head">
+      <div><h1>Train your AI</h1><p>Teach Catalyst about your business — it answers customers using only what you add here.</p></div>
+      <div class="head-actions"><div class="btn ghost">Discard</div><div class="btn primary" id="save">Save &amp; retrain</div></div>
+    </div>
+
+    <div class="layout">
+      <div class="left">
+        <div class="card progress">
+          <div class="ring"><span>92%</span></div>
+          <div class="txt"><b>Your AI knows your business well</b><div class="muted">Add your cancellation policy to reach 100%. Last trained 2 min ago.</div></div>
+          <div class="stats"><div><b>12</b><span>Services</span></div><div><b>18</b><span>FAQs</span></div><div><b>5</b><span>Languages</span></div></div>
+        </div>
+
+        <div class="grid">
+          <div class="card"><div class="card-head"><div class="card-title"><span class="ico" data-i="tag"></span>Services &amp; Prices</div><span class="card-sub">12 items · showing 4</span></div>
+            <div class="card-body" id="services"></div></div>
+
+          <div class="card"><div class="card-head"><div class="card-title"><span class="ico" data-i="clock"></span>Business Hours</div><span class="card-sub">GMT+4</span></div>
+            <div class="card-body" id="hours" style="gap:0"></div></div>
+
+          <div class="card"><div class="card-head"><div class="card-title"><span class="ico" data-i="book"></span>FAQs</div><span class="card-sub">18 answers</span></div>
+            <div class="card-body" id="faqs"></div></div>
+
+          <div class="card"><div class="card-head"><div class="card-title"><span class="ico" data-i="smile"></span>Brand tone</div><span class="card-sub">How your AI sounds</span></div>
+            <div class="card-body">
+              <div class="tones" id="tones"></div>
+              <div class="setting"><span>Use emojis</span><div class="toggle on orange"></div></div>
+              <div class="setting"><span>Reply in customer's language</span><div class="toggle on orange"></div></div>
+            </div></div>
+        </div>
+      </div>
+
+      <div class="card test">
+        <div class="test-head"><div class="av" id="test-av"></div><div><div class="nm">Test chat</div><div class="sub">● Using your latest training</div></div><span class="tag ai">Sandbox</span></div>
+        <div class="tmsgs" id="tmsgs"></div>
+        <div class="test-foot"><div class="input">Ask anything a customer would…</div><div class="go" id="go"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="shell.js"></script>
+<script>
+// ---- Edit the fake data here ----
+const services = [
+  ["Haircut & Style", "60 min", "$45"],
+  ["Color & Highlights", "2 h", "$120"],
+  ["Keratin Treatment", "2.5 h", "$160"],
+  ["Gel Manicure", "45 min", "$25"],
+];
+const hours = [
+  ["Monday", "09:00", "19:00"], ["Tuesday", "09:00", "19:00"], ["Wednesday", "09:00", "19:00"],
+  ["Thursday", "09:00", "21:00"], ["Friday", "09:00", "21:00"], ["Saturday", "09:00", "17:00"], ["Sunday", null, null],
+];
+const faqs = [
+  ["Do you accept walk-ins?", "Yes, when a stylist is free — booking is recommended on weekends."],
+  ["How do I pay?", "Bank transfer or card in-store. Send your slip on WhatsApp to confirm."],
+];
+const tones = [
+  ["Friendly", "Warm, upbeat, a few emojis", true],
+  ["Professional", "Polished and to the point"],
+  ["Playful", "Fun, casual, lots of energy"],
+  ["Concise", "Short answers, no fluff"],
+];
+const chat = [
+  { who: "u", text: "How much is the bridal package? 💍" },
+  { who: "a", text: "Congratulations! 🎉 Our Bridal Package is <b>$350</b> — it includes a trial session plus hair &amp; makeup on the day. Want me to check your date?", src: "Services & Prices" },
+  { who: "u", text: "هل أنتم مفتوحون يوم الأحد؟", rtl: true },
+  { who: "a", text: "نحن مغلقون يوم الأحد، ويسعدنا استقبالك يوم السبت من 9 صباحاً حتى 5 مساءً 😊", rtl: true, src: "Business Hours" },
+  { who: "u", text: "周四晚上可以做角蛋白护理吗？" },
+  { typing: true },
+];
+// ---------------------------------
+
+document.getElementById("services").innerHTML = services.map(([n, d, p]) =>
+  `<div class="svc"><span class="n">${n}</span><span class="d">${ic("clock")}${d}</span><span class="p">${p}</span></div>`).join("")
+  + `<div class="add">${ic("plus")}Add service</div>`;
+document.getElementById("hours").innerHTML = hours.map(([d, a, b]) =>
+  `<div class="hours ${a ? "" : "closed"}"><span class="day">${d}</span>
+   <span class="time">${a ? `<span>${a}</span>–<span>${b}</span>` : "Closed"}</span>
+   <div class="toggle ${a ? "on" : ""}"></div></div>`).join("");
+document.getElementById("faqs").innerHTML = faqs.map(([q, a]) =>
+  `<div class="faq"><div class="q">${ic("help")}${q}</div><div class="a">${a}</div></div>`).join("")
+  + `<div class="add">${ic("plus")}Add FAQ <span style="margin-left:auto;color:var(--dim);font-weight:500">+15 more</span></div>`;
+document.getElementById("tones").innerHTML = tones.map(([t, e, on]) =>
+  `<div class="tone ${on ? "on" : ""}"><div class="t">${t}<span class="radio"></span></div><div class="e">${e}</div></div>`).join("");
+document.getElementById("tmsgs").innerHTML = chat.map(m => m.typing
+  ? `<div class="typing"><i></i><i></i><i></i></div>`
+  : `<div class="m ${m.who}" ${m.rtl ? 'dir="rtl"' : ""}>${m.text}${m.src ? `<div><span class="src" dir="ltr">${ic("book")}From: ${m.src}</span></div>` : ""}</div>`).join("");
+
+document.querySelectorAll("[data-i]").forEach(e => e.innerHTML = ic(e.dataset.i));
+document.getElementById("save").insertAdjacentHTML("afterbegin", ic("refresh"));
+document.getElementById("test-av").innerHTML = ic("bolt");
+document.getElementById("go").innerHTML = ic("send");
+</script>
+</body>
+</html>

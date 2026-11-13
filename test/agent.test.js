@@ -1,4 +1,5 @@
-// AI agent tests (bot/agent.js, bot/tools.js) with a scripted fake LLM. Run: npm test
+// AI agent tests (bot/agent.js, bot/catalyst-tools.js, and the older tutor bot/tools.js) with a
+// scripted fake LLM. Run: npm test
 // These check the loop, tools, scoping and fallbacks, not the model's wording.
 
 process.env.DB_PATH = ":memory:";
@@ -9,6 +10,7 @@ const db = require("../db");
 const { seed } = require("../db/seed");
 const { createAgent, systemPrompt, toWhatsApp, FALLBACK, FALLBACKS } = require("../bot/agent");
 const { createTools } = require("../bot/tools");
+const catalystTools = require("../bot/catalyst-tools");
 
 const NOW = new Date("2026-11-10T06:00:00Z"); // Tue 10 Nov 2026, 11:30 in Colombo
 const PERERA = "94770000202";   // parent: Dilini (A/L) + Kasun (Grade 10)
@@ -57,28 +59,26 @@ describe("agent loop", () => {
     const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "hi") });
     assert.deepEqual(r.replies, [{ type: "text", body: "Hello! How can I help?" }]);
     assert.equal(llm.requests.length, 1);
-    assert.equal(llm.requests[0].tools.length, createTools({ db, contact: contact(PERERA) }).names.length);
+    assert.deepEqual(llm.requests[0].tools.map((t) => t.function.name), ["hand_off_to_team"]);
   });
 
   test("tool call -> result goes back to the model -> final answer", async () => {
-    const llm = scriptedLLM([{ tools: [["list_classes", {}]] }, "We have 7 classes."]);
-    const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "what classes?") });
-    assert.equal(r.replies[0].body, "We have 7 classes.");
-    assert.deepEqual(r.toolCalls, ["list_classes"]);
-    const [classes] = toolResults(llm.requests[1]);
-    assert.equal(classes.length, 7);
-    assert.ok(classes.find((c) => c.class_id === 7).full);
+    const llm = scriptedLLM([{ tools: [["hand_off_to_team", { name: "Nimal", summary: "Main need: custom price" }]] }, "I've passed this to the team."]);
+    const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "special price for 3 branches?") });
+    assert.equal(r.replies[0].body, "I've passed this to the team.");
+    assert.deepEqual(r.toolCalls, ["hand_off_to_team"]);
+    assert.equal(toolResults(llm.requests[1])[0].ok, true);
   });
 
   test("several tool calls in one round", async () => {
-    const llm = scriptedLLM([{ tools: [["get_my_family"], ["get_my_fees"]] }, "Done."]);
-    const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "summary please") });
-    assert.deepEqual(r.toolCalls, ["get_my_family", "get_my_fees"]);
+    const llm = scriptedLLM([{ tools: [["hand_off_to_team", { summary: "a" }], ["hand_off_to_team", { summary: "b" }]] }, "Done."]);
+    const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "human please") });
+    assert.deepEqual(r.toolCalls, ["hand_off_to_team", "hand_off_to_team"]);
     assert.equal(toolResults(llm.requests[1]).length, 2);
   });
 
   test("unknown tools and bad arguments go back to the model as errors, and the loop continues", async () => {
-    const llm = scriptedLLM([{ tools: [["delete_everything", {}], ["get_class_schedule", "{not json"]] }, "Sorry about that."]);
+    const llm = scriptedLLM([{ tools: [["delete_everything", {}], ["hand_off_to_team", "{not json"]] }, "Sorry about that."]);
     const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "x") });
     assert.equal(r.replies[0].body, "Sorry about that.");
     const [a, b] = toolResults(llm.requests[1]);
@@ -108,21 +108,18 @@ describe("agent loop", () => {
 });
 
 describe("context sent to the model", () => {
-  test("system prompt has today's date, the contact and their students", () => {
-    const c = contact(PERERA);
-    const p = systemPrompt({ tutor: db.getTutor(), contact: c, students: db.listStudents(c.id), now: NOW, db });
+  test("system prompt has today's date, the contact and the AlchemyX knowledge base", () => {
+    const p = systemPrompt({ contact: contact(PERERA), now: NOW });
     assert.match(p, /Tuesday, 10 November 2026/);
-    assert.match(p, /Mrs\. S\. Perera, a parent/);
-    const dilini = p.split("\n").find((l) => l.startsWith("- Dilini Perera (A/L 2027): "));
-    assert.ok(dilini?.includes("2027 A/L Physics – Theory [active]"));
-    assert.ok(dilini.includes("A/L Physics – Paper Class [pending]"));
-    assert.match(p, /- Kasun Perera \(Grade 10\): Grade 10 Maths – Theory \[active\]/);
-    assert.match(p, /NOT the tutor/);
+    assert.match(p, /Mrs\. S\. Perera, WhatsApp 94770000202/);
+    assert.match(p, /AlchemyX Global assistant/);
+    assert.match(p, /=== KNOWLEDGE BASE ===[\s\S]*Catalyst — an AI front-desk assistant[\s\S]*=== END OF KNOWLEDGE BASE ===/);
+    assert.match(p, /\[CONFIRM\] is NOT confirmed/);
+    assert.doesNotMatch(p, /tutor in Sri Lanka/);
   });
 
-  test("a new number is described as a new enquiry", () => {
-    const c = contact("94779990001");
-    assert.match(systemPrompt({ tutor: db.getTutor(), contact: c, students: [], now: NOW }), /new enquiry/);
+  test("a new number has no name yet", () => {
+    assert.match(systemPrompt({ contact: contact("94779990001"), now: NOW }), /name unknown, WhatsApp 94779990001/);
   });
 
   test("chat history is sent in order, with roles, ending with the new message", async () => {
@@ -135,12 +132,46 @@ describe("context sent to the model", () => {
     assert.deepEqual(convo, [["user", "hi"], ["assistant", "Hello!"], ["user", "[sent a photo]"], ["user", "fees?"]]);
   });
 
+  test("history before HISTORY_SINCE (the old tutor bot's chats) is left out", async () => {
+    db.logMessage({ id: "old1", waId: PERERA, direction: "out", type: "text", body: "Ask about class schedules!" });
+    const llm = scriptedLLM(["ok"]);
+    await agentWith(llm, { historySince: "2999-01-01T00:00:00Z" }).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "hello") });
+    const convo = llm.requests[0].messages.slice(1, -1).map((m) => m.content);
+    assert.deepEqual(convo, ["hello"]); // only the new message, which is always included
+  });
+
   test("history is capped", async () => {
     for (let i = 0; i < 30; i++) db.logMessage({ id: `old${i}`, waId: PERERA, direction: "in", type: "text", body: `m${i}` });
     const llm = scriptedLLM(["ok"]);
     await agentWith(llm, { historyLimit: 5 }).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "latest") });
     assert.equal(llm.requests[0].messages.length, 1 + 5 + 1);
     assert.equal(llm.requests[0].messages.at(-2).content, "latest");
+  });
+});
+
+describe("hand_off_to_team", () => {
+  const NEW = "94779990001";
+  const run = (waId, args) => catalystTools.createTools({ db, contact: contact(waId) }).run("hand_off_to_team", JSON.stringify(args));
+
+  test("pauses the bot for this contact with the summary and their number, and saves their name", () => {
+    assert.equal(run(NEW, { name: "Nimal", summary: "Business / type: salon\nMain need: custom price" }).ok, true);
+    const c = db.getContactByWaId(NEW);
+    assert.equal(c.bot_paused, 1);
+    assert.match(c.paused_reason, /^HANDOFF\nPhone: 94779990001\nBusiness \/ type: salon/);
+    assert.equal(c.name, "Nimal");
+  });
+
+  test("doesn't overwrite a name we already have, and needs a summary", () => {
+    run(PERERA, { name: "Someone Else", summary: "x" });
+    assert.equal(db.getContactByWaId(PERERA).name, "Mrs. S. Perera");
+    assert.match(run(NEW, { summary: "  " }).error, /summary/);
+    assert.equal(db.getContactByWaId(NEW).bot_paused, 0);
+  });
+
+  test("the handler then stays silent for that contact", async () => {
+    const llm = scriptedLLM([{ tools: [["hand_off_to_team", { summary: "x" }]] }, "Passed to the team."]);
+    await agentWith(llm).respond({ contact: contact(NEW), incoming: incoming(NEW, "can I talk to a human?") });
+    assert.equal(contact(NEW).bot_paused, 1);
   });
 });
 
@@ -234,13 +265,13 @@ describe("language", () => {
   });
 
   test("every request ends with a reminder of the reply language, after the user's message", async () => {
-    const llm = scriptedLLM([{ tools: [["list_classes", {}]] }, "ok"]);
-    await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "mokakda class eka") });
+    const llm = scriptedLLM([{ tools: [["hand_off_to_team", { summary: "x" }]] }, "ok"]);
+    await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "meka mokakda") });
     const [first] = llm.requests;
-    assert.equal(first.messages.at(-2).content, "mokakda class eka");
+    assert.equal(first.messages.at(-2).content, "meka mokakda");
     assert.equal(first.messages.at(-1).role, "system");
     assert.match(first.messages.at(-1).content, /Reply in Singlish/);
-    assert.match(first.messages.at(-1).content, /must come from a tool result/);
+    assert.match(first.messages.at(-1).content, /Facts only from the knowledge base/);
     // Tool rounds keep it in place (before the tool results, after the user's message).
     assert.ok(llm.requests[1].messages.some((m) => m.role === "system" && /Reply in Singlish/.test(m.content)));
   });

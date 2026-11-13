@@ -51,8 +51,8 @@ const agent = createAgent({ db, llm });
 const bot = createHandler({ db, whatsapp, agent });
 console.log(`AI model: ${llm.model}`);
 const admin = createAdmin({ db, whatsapp });
-if (!admin.isEnabled()) {
-  console.warn("Note: ADMIN_TOKEN is not set; the AlchemyX Catalyst dashboard (/admin) is switched off.");
+if (!admin.requiresKey()) {
+  console.warn("Note: ADMIN_TOKEN is not set; the AlchemyX Catalyst dashboard (/admin) is open to anyone who can reach this server.");
 }
 
 function safeEqual(a, b) {
@@ -165,5 +165,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Webhook server listening on :${PORT}/webhook`);
-  if (admin.isEnabled()) console.log(`AlchemyX Catalyst dashboard: http://localhost:${PORT}/admin/`);
+  console.log(`AlchemyX Catalyst dashboard: http://localhost:${PORT}/admin/`);
 });

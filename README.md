@@ -55,7 +55,7 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `GROQ_API_KEY` | For AI replies | none  | Groq API key. Without it the bot only sends a "having trouble" message |
 | `GROQ_MODEL`   | No       | `openai/gpt-oss-120b` | Groq model used by the agent                        |
 | `GROQ_REASONING_EFFORT` | No | Groq default | `low`/`medium`/`high` for gpt-oss models. `low` was tested and made the agent skip tools and invent classes |
-| `ADMIN_TOKEN`  | For the dashboard | none | Sign-in key for the AlchemyX Catalyst dashboard at `/admin`. Use a long random string. Without it the dashboard is switched off |
+| `ADMIN_TOKEN`  | For the dashboard | none | Sign-in key for the AlchemyX Catalyst dashboard at `/admin`. Use a long random string. Without it the dashboard is open with no sign-in (anyone with the URL, including through ngrok, can use it) |
 
 Put these in a `.env` file in the project root (copy `.env.example`). The server loads it at startup (Node 20.12+). The file is gitignored, so secrets stay out of the repo. Variables set in the shell override the file.
 
@@ -90,12 +90,23 @@ A web dashboard for the tutor, served by the same server at `http://localhost:30
 - **Classes:** seats taken per class and the next two weeks of sessions
 - **Payments:** approve or reject slips (a rejection needs a reason, which the bot gives the parent when they ask about fees) and who still owes
 
-Every API call needs the `ADMIN_TOKEN` (you type it in to sign in; it is kept only for that browser tab).
+If `ADMIN_TOKEN` is set, every API call needs it (you type it in to sign in; it is kept only for that browser tab). If it is not set, the dashboard opens straight away with no sign-in.
 
 ```bash
 npm run web:install   # first time
 npm run web:build     # build web/dist, then (re)start the server
 npm run web:dev       # or: live-reloading UI at http://localhost:5173/admin/ (needs npm start running)
+```
+
+### Promo video
+
+`video/` is a [Remotion](https://www.remotion.dev/) project that renders a 36-second promo of Catalyst (1920x1080, 30 fps): intro, overview, a Singlish conversation answered by the bot, the teacher taking over, approving a slip, and an outro. The screens reuse the dashboard's own stylesheet. The soundtrack is synthesized by `video/scripts/make-soundtrack.mjs` (no third-party music).
+
+```bash
+cd video
+npm install
+npm run studio   # preview and scrub at http://localhost:3211
+npm run render   # writes out/catalyst-promo.mp4
 ```
 
 ## Connecting to Meta

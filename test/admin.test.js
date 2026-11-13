@@ -53,11 +53,16 @@ describe("access", () => {
     assert.equal((await call("GET", "/admin/api/overview", { token: "nope" })).status, 401);
   });
 
-  test("without ADMIN_TOKEN the dashboard is switched off", async () => {
-    const off = await startServer({ token: "" });
-    const res = await fetch(`http://localhost:${off.address().port}/admin/api/overview`, { headers: { Authorization: "Bearer " } });
-    assert.equal(res.status, 503);
-    off.close();
+  test("without ADMIN_TOKEN the dashboard is open and says no key is needed", async () => {
+    const open = await startServer({ token: "" });
+    const url = `http://localhost:${open.address().port}/admin/api`;
+    assert.equal((await fetch(`${url}/overview`)).status, 200);
+    assert.deepEqual(await (await fetch(`${url}/auth`)).json(), { required: false });
+    open.close();
+  });
+
+  test("with ADMIN_TOKEN the auth endpoint says a key is needed", async () => {
+    assert.deepEqual((await call("GET", "/admin/api/auth", { token: null })).data, { required: true });
   });
 
   test("unknown endpoints are 404 and paths can't escape the web build", async () => {

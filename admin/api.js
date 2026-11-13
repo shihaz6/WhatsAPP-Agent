@@ -1,7 +1,8 @@
 // AlchemyX Catalyst: the tutor's dashboard. This file serves its JSON API (/admin/api/...)
-// and the built web app (web/dist at /admin). Every API call needs
+// and the built web app (web/dist at /admin). When ADMIN_TOKEN is set, every API call needs
 //   Authorization: Bearer <ADMIN_TOKEN>
-// The server is public through ngrok, so without ADMIN_TOKEN the dashboard stays switched off.
+// When ADMIN_TOKEN is not set the dashboard is OPEN: anyone who can reach the server
+// (including through ngrok) can read conversations and send messages.
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -126,9 +127,12 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
   const reviewed = (r) => (r.ok ? [200, r.payment] : [409, { error: "This payment has no slip waiting for review" }]);
 
   async function handleApi(req, res, subpath) {
-    if (!token) return sendJson(res, 503, { error: "Catalyst is switched off: set ADMIN_TOKEN in .env and restart." });
-    const auth = req.headers.authorization ?? "";
-    if (!auth.startsWith("Bearer ") || !safeEqual(auth.slice(7), token)) return sendJson(res, 401, { error: "Wrong or missing access key" });
+    // Tells the web app whether to show the sign-in screen. Public on purpose.
+    if (subpath === "/auth" && req.method === "GET") return sendJson(res, 200, { required: Boolean(token) });
+    if (token) {
+      const auth = req.headers.authorization ?? "";
+      if (!auth.startsWith("Bearer ") || !safeEqual(auth.slice(7), token)) return sendJson(res, 401, { error: "Wrong or missing access key" });
+    }
 
     for (const [method, pattern, handler] of routes) {
       const m = subpath.match(pattern);
@@ -179,7 +183,7 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
     return false;
   }
 
-  return { handle, isEnabled: () => Boolean(token) };
+  return { handle, requiresKey: () => Boolean(token) };
 }
 
 module.exports = { createAdmin };

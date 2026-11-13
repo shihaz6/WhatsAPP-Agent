@@ -44,6 +44,17 @@ export async function signIn(key: string): Promise<Overview> {
   return overview;
 }
 
+// Asks the server whether it needs an access key (it doesn't when ADMIN_TOKEN is unset).
+export async function authRequired(): Promise<boolean> {
+  try {
+    const res = await fetch("/admin/api/auth");
+    const data = await res.json();
+    return data.required !== false;
+  } catch {
+    return true;
+  }
+}
+
 export function signOut() {
   memoryKey = null;
   session.clear();

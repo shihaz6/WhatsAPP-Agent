@@ -1,0 +1,26 @@
+{
+  "name": "alchemyx-launch-teaser",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AlchemyX Global pre-launch teaser for Catalyst (landscape + portrait), made with Remotion",
+  "scripts": {
+    "soundtrack": "node scripts/make-soundtrack.mjs",
+    "studio": "npm run soundtrack && remotion studio",
+    "render:landscape": "remotion render Teaser-Landscape out/alchemyx-teaser-landscape.mp4",
+    "render:portrait": "remotion render Teaser-Portrait out/alchemyx-teaser-portrait.mp4",
+    "render:feed": "remotion render Teaser-Feed out/alchemyx-teaser-feed-4x5.mp4",
+    "render": "npm run soundtrack && npm run render:landscape && npm run render:portrait && npm run render:feed",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.538",
+    "@remotion/google-fonts": "4.0.538",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.538"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

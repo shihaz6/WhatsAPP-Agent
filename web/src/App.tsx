@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { session, signIn, signOut } from "./api";
+import { authRequired, session, signIn, signOut } from "./api";
 import { Glyph, Logo, type GlyphName } from "./Glyph";
 import { readHash, type View } from "./nav";
 import { Overview } from "./views/Overview";
@@ -28,6 +28,8 @@ function Brand() {
 
 export default function App() {
   const [authed, setAuthed] = useState(() => Boolean(session.get()));
+  // null = still asking the server whether an access key is needed
+  const [needsKey, setNeedsKey] = useState<boolean | null>(null);
   const [route, setRoute] = useState(readHash);
 
   useEffect(() => {
@@ -36,9 +38,12 @@ export default function App() {
     return () => removeEventListener("hashchange", onHash);
   }, []);
 
+  useEffect(() => { authRequired().then(setNeedsKey); }, []);
+
   const logout = () => { signOut(); setAuthed(false); };
-  if (!authed) return <SignIn onDone={() => setAuthed(true)} />;
-  const props = { onAuthError: logout };
+  if (needsKey === null) return null;
+  if (needsKey && !authed) return <SignIn onDone={() => setAuthed(true)} />;
+  const props = { onAuthError: needsKey ? logout : () => setNeedsKey(true) };
 
   return (
     <div className="shell">
@@ -53,15 +58,17 @@ export default function App() {
             </a>
           ))}
         </nav>
-        <button className="nav-item sidebar-foot" onClick={logout}>
-          <Glyph name="logout" />
-          <span>Sign out</span>
-        </button>
+        {needsKey && (
+          <button className="nav-item sidebar-foot" onClick={logout}>
+            <Glyph name="logout" />
+            <span>Sign out</span>
+          </button>
+        )}
       </aside>
 
       <header className="mobile-top">
         <Brand />
-        <button className="btn btn-ghost btn-sm" onClick={logout}>Sign out</button>
+        {needsKey && <button className="btn btn-ghost btn-sm" onClick={logout}>Sign out</button>}
       </header>
 
       <main className="main" key={route.view}>

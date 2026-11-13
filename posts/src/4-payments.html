@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Catalyst — Payment slips</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .sum { padding: 16px 20px; display: flex; align-items: center; gap: 16px; }
+  .sum .ico { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; }
+  .sum .ico svg { width: 21px; height: 21px; }
+  .sum b { display: block; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+  .sum span { color: var(--muted); font-size: 13px; }
+
+  .layout { display: grid; grid-template-columns: 1fr 380px; gap: 18px; flex: 1; min-height: 0; }
+  .table-card { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  .toolbar .tabs { display: flex; gap: 4px; }
+  .toolbar .tabs span { padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .toolbar .tabs span.on { background: var(--surface-2); color: #fff; }
+  .toolbar .input { margin-left: auto; width: 230px; height: 36px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr.sel td { background: rgba(255,107,26,0.07); }
+  tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--orange); }
+  .cust { display: flex; align-items: center; gap: 11px; }
+  .cust .avatar { width: 34px; height: 34px; font-size: 12px; }
+  .cust .nm { font-weight: 650; }
+  .cust .ch { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 5px; }
+  .cust .ch i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .amt { font-weight: 750; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .svc { color: var(--muted); font-size: 12.5px; }
+  .date { color: #d9dee3; font-variant-numeric: tabular-nums; }
+  .date small { display: block; color: var(--dim); font-size: 12px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px; border-radius: 99px; font-size: 12.5px; font-weight: 700; }
+  .badge svg { width: 13px; height: 13px; stroke-width: 2.6; }
+  .badge.ok { background: var(--green-soft); color: var(--green); }
+  .badge.pend { background: var(--orange-soft); color: var(--orange); }
+  .ai-note { display: block; color: var(--dim); font-size: 11.5px; margin-top: 3px; }
+
+  .thumb { width: 38px; height: 48px; border-radius: 6px; background: #eef0f3; padding: 6px 5px; display: flex; flex-direction: column; gap: 3px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+  .thumb i { display: block; height: 3px; border-radius: 2px; background: #c3c9d0; }
+  .thumb i.h { height: 5px; width: 65%; }
+  .thumb i.s { width: 55%; }
+
+  .preview { display: flex; flex-direction: column; overflow: hidden; }
+  .preview .card-head { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .paper-wrap { padding: 18px 20px; background: #12161b; display: grid; place-items: center; }
+  .paper { width: 250px; background: #f7f8fa; color: #1b1f24; border-radius: 10px; padding: 18px 18px 14px; box-shadow: 0 18px 40px rgba(0,0,0,0.45); transform: rotate(-1.5deg); font-size: 12px; }
+  .paper .bank { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 13px; }
+  .paper .bank i { width: 22px; height: 22px; border-radius: 6px; background: #2d5bd7; }
+  .paper .ok { margin: 12px 0 2px; color: #0f9d58; font-weight: 700; font-size: 11.5px; }
+  .paper .big { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+  .paper .ln { display: flex; justify-content: space-between; padding: 5px 0; border-top: 1px dashed #d5d9de; color: #5b636c; }
+  .paper .ln b { color: #1b1f24; font-weight: 650; }
+  .hl { background: rgba(255,107,26,0.22); outline: 2px solid #ff6b1a; border-radius: 4px; padding: 0 3px; }
+
+  .extract { padding: 14px 20px; display: flex; flex-direction: column; gap: 9px; }
+  .extract h4 { margin: 0 0 2px; font-size: 13px; display: flex; align-items: center; gap: 8px; color: var(--orange); }
+  .extract h4 svg { width: 15px; height: 15px; }
+  .ex { display: flex; justify-content: space-between; align-items: center; font-size: 13.5px; }
+  .ex span { color: var(--muted); }
+  .ex b { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+  .ex b svg { width: 14px; height: 14px; color: var(--green); stroke-width: 2.8; }
+  .actions { padding: 4px 20px 20px; display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
+  .actions .btn { justify-content: center; height: 42px; }
+  .actions .ok { background: var(--green); color: #062612; border-color: transparent; box-shadow: 0 6px 18px rgba(37,211,102,0.3); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="nav" data-active="payments"></div>
+  <div class="main">
+    <div class="page-head">
+      <div><h1>Payment slips</h1><p>Customers send transfer slips on WhatsApp — Catalyst reads them and matches each one to a booking.</p></div>
+      <div class="head-actions"><div class="btn" id="exp">Export CSV</div></div>
+    </div>
+
+    <div class="summary" id="summary"></div>
+
+    <div class="layout">
+      <div class="card table-card">
+        <div class="toolbar">
+          <div class="tabs"><span class="on">All 8</span><span>Pending 3</span><span>Approved 5</span></div>
+          <div class="input" id="search">Search customer or ref</div>
+        </div>
+        <table><thead><tr><th>Slip</th><th>Customer</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody id="rows"></tbody></table>
+      </div>
+
+      <div class="card preview">
+        <div class="card-head"><div class="card-title"><span class="ico" id="eye"></span>Slip from Omar Haddad</div><span class="tag needs">Needs review</span></div>
+        <div class="paper-wrap">
+          <div class="paper">
+            <div class="bank"><i></i>Northwind Bank</div>
+            <div class="ok">✓ Transfer successful</div>
+            <div class="big"><span class="hl">$120.00</span></div>
+            <div style="color:#5b636c;margin-bottom:10px">to Bloom &amp; Co. Salon</div>
+            <div class="ln"><span>Reference</span><b>TXN-48213</b></div>
+            <div class="ln"><span>Date</span><b>12 Nov 2026, 09:14</b></div>
+            <div class="ln"><span>To account</span><b>•••• 0921</b></div>
+          </div>
+        </div>
+        <div class="extract">
+          <h4 id="ex-h">Read by Catalyst AI</h4>
+          <div class="ex"><span>Amount</span><b id="c1">$120.00 · matches booking</b></div>
+          <div class="ex"><span>Booking</span><b id="c2">Color &amp; Highlights · Thu 14 Nov</b></div>
+          <div class="ex"><span>Account</span><b id="c3">•••• 0921 · yours</b></div>
+          <div class="ex"><span>Duplicate check</span><b id="c4">No earlier use</b></div>
+        </div>
+        <div class="actions"><div class="btn" id="rej">Reject</div><div class="btn ok" id="apr">Approve &amp; confirm</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="shell.js"></script>
+<script>
+// ---- Edit the fake data here ----
+const summary = [
+  ["hourglass", "var(--orange-soft)", "var(--orange)", "3", "Pending review"],
+  ["check", "var(--green-soft)", "var(--green)", "$1,385", "Approved this week"],
+  ["shield", "var(--blue-soft)", "var(--blue)", "87%", "Auto-verified by AI"],
+];
+const slips = [
+  { name: "Omar Haddad",    svc: "Color & Highlights", amt: "$120.00", date: "Nov 12", time: "09:15", status: "pend", sel: true },
+  { name: "Sofía Martínez", svc: "Haircut & Style",    amt: "$45.00",  date: "Nov 12", time: "10:47", status: "ok" },
+  { name: "Wei Chen",       svc: "Bridal Package",     amt: "$350.00", date: "Nov 11", time: "18:02", status: "pend" },
+  { name: "Priya Sharma",   svc: "Gel Manicure",       amt: "$25.00",  date: "Nov 11", time: "16:40", status: "ok" },
+  { name: "James Porter",   svc: "Haircut + Beard",    amt: "$80.00",  date: "Nov 10", time: "12:26", status: "ok" },
+  { name: "Aisha Rahman",   svc: "Keratin Treatment",  amt: "$160.00", date: "Nov 10", time: "11:03", status: "pend" },
+  { name: "Mei Lin",        svc: "Haircut & Style",    amt: "$45.00",  date: "Nov 9",  time: "15:51", status: "ok" },
+  { name: "Emma Clarke",    svc: "Color & Highlights", amt: "$120.00", date: "Nov 9",  time: "10:18", status: "ok" },
+];
+// ---------------------------------
+
+document.getElementById("summary").innerHTML = summary.map(([i, bg, fg, v, l]) =>
+  `<div class="card sum"><div class="ico" style="background:${bg};color:${fg}">${ic(i)}</div><div><b>${v}</b><span>${l}</span></div></div>`).join("");
+
+document.getElementById("rows").innerHTML = slips.map(s => `
+  <tr class="${s.sel ? "sel" : ""}">
+    <td><div class="thumb"><i class="h" style="background:${s.status === "ok" ? "#25d366" : "#4c9aff"}"></i><i></i><i class="s"></i><i></i><i class="s"></i></div></td>
+    <td><div class="cust"><div class="avatar" style="${avatarStyle(s.name)}">${initials(s.name)}</div><div><div class="nm">${s.name}</div><div class="ch"><i></i>WhatsApp</div></div></div></td>
+    <td><div class="amt">${s.amt}</div><div class="svc">${s.svc}</div></td>
+    <td><div class="date">${s.date}, 2026<small>${s.time}</small></div></td>
+    <td>${s.status === "ok"
+      ? `<span class="badge ok">${ic("check")}Approved</span><span class="ai-note">Auto-verified by AI</span>`
+      : `<span class="badge pend">${ic("clock")}Pending</span><span class="ai-note">Waiting for your OK</span>`}</td>
+  </tr>`).join("");
+
+document.getElementById("eye").innerHTML = ic("eye");
+document.getElementById("exp").insertAdjacentHTML("afterbegin", ic("download"));
+document.getElementById("search").insertAdjacentHTML("afterbegin", ic("search"));
+document.getElementById("ex-h").insertAdjacentHTML("afterbegin", ic("sparkle"));
+["c1", "c2", "c3", "c4"].forEach(id => document.getElementById(id).insertAdjacentHTML("afterbegin", ic("check")));
+document.getElementById("rej").insertAdjacentHTML("afterbegin", ic("x"));
+document.getElementById("apr").insertAdjacentHTML("afterbegin", ic("check"));
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "alchemyx-teaser-2",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AlchemyX Global teaser 2 for Catalyst: interface + how it works (landscape + portrait), made with Remotion",
+  "scripts": {
+    "soundtrack": "node scripts/make-soundtrack.mjs",
+    "studio": "npm run soundtrack && remotion studio",
+    "render:landscape": "remotion render Teaser2-Landscape out/alchemyx-teaser2-landscape.mp4",
+    "render:portrait": "remotion render Teaser2-Portrait out/alchemyx-teaser2-portrait.mp4",
+    "render:feed": "remotion render Teaser2-Feed out/alchemyx-teaser2-feed-4x5.mp4",
+    "render": "npm run soundtrack && npm run render:landscape && npm run render:portrait && npm run render:feed",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.538",
+    "@remotion/google-fonts": "4.0.538",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.538"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

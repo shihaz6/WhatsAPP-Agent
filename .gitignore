@@ -37,3 +37,7 @@ desktop.ini
 
 # Local database (recreate with: npm run seed)
 data/
+
+# Promo video: rendered output and the generated soundtrack (npm run soundtrack)
+video/out/
+video/public/soundtrack.wav

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Catalyst — Analytics</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .stat { padding: 20px 22px; position: relative; overflow: hidden; }
+  .stat .lbl { display: flex; align-items: center; gap: 10px; color: var(--muted); font-weight: 550; font-size: 14px; }
+  .stat .lbl .ico { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--orange-soft); color: var(--orange); }
+  .stat .lbl .ico svg { width: 17px; height: 17px; }
+  .stat .val { font-size: 46px; font-weight: 800; letter-spacing: -0.035em; margin: 12px 0 4px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .stat .val small { font-size: 26px; font-weight: 700; color: var(--muted); margin-left: 2px; }
+  .stat .delta { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 650; color: var(--green); background: var(--green-soft); padding: 3px 9px; border-radius: 99px; }
+  .stat .delta svg { width: 13px; height: 13px; }
+  .stat .vs { color: var(--dim); font-size: 12.5px; margin-left: 6px; }
+  .stat.hero { background: linear-gradient(150deg, rgba(255,107,26,0.22), rgba(255,107,26,0.04) 60%), var(--surface); border-color: rgba(255,107,26,0.35); }
+  .stat.hero .ico { background: var(--orange); color: #fff; }
+  .stat svg.spark { position: absolute; right: 18px; bottom: 18px; width: 110px; height: 40px; }
+
+  .row2 { display: grid; grid-template-columns: 1fr 380px; gap: 18px; flex: 1; min-height: 0; }
+  .col { display: flex; flex-direction: column; gap: 18px; min-height: 0; }
+  .card-body { padding: 16px 20px 18px; }
+  .legend { display: flex; gap: 18px; font-size: 12.5px; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: 7px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; }
+  #chart text { fill: var(--dim); font-size: 11.5px; font-family: inherit; }
+
+  .qrow { display: grid; grid-template-columns: 170px 1fr 52px; gap: 14px; align-items: center; padding: 6px 0; }
+  .qrow .n { font-weight: 550; display: flex; align-items: center; gap: 9px; }
+  .qrow .bar { height: 10px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+  .qrow .bar i { display: block; height: 100%; border-radius: 99px; background: var(--orange); }
+  .qrow .v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .qrow .ex { color: var(--dim); font-size: 12px; font-weight: 400; }
+
+  .lang { display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; padding: 7px 0; }
+  .lang .code { width: 34px; height: 26px; border-radius: 7px; background: var(--surface-3); display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #d9dee3; }
+  .lang .native { color: var(--dim); font-size: 12.5px; margin-left: 6px; }
+  .lang .pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stack { display: flex; height: 12px; border-radius: 99px; overflow: hidden; gap: 3px; margin: 4px 0 10px; }
+
+  .resolve { display: flex; align-items: center; gap: 20px; padding: 20px 22px; }
+  .resolve .ring { width: 92px; height: 92px; border-radius: 50%; background: conic-gradient(var(--green) 0 94%, var(--surface-3) 0); display: grid; place-items: center; flex: none; }
+  .resolve .ring span { width: 74px; height: 74px; border-radius: 50%; background: var(--surface); display: grid; place-items: center; font-weight: 800; font-size: 22px; }
+  .resolve b { font-size: 16px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="nav" data-active="analytics"></div>
+  <div class="main">
+    <div class="page-head">
+      <div><h1>Analytics</h1><p>What your AI agent did for Bloom &amp; Co. while you were busy.</p></div>
+      <div class="head-actions"><span class="pill" id="range">Oct 14 – Nov 12 · Last 30 days</span><div class="btn" id="export">Export</div></div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="row2">
+      <div class="col">
+        <div class="card" style="flex:1.6;display:flex;flex-direction:column">
+          <div class="card-head"><div><div class="card-title">Messages over time</div><div class="card-sub" style="margin-top:2px">Daily conversations handled across all channels</div></div>
+            <div class="legend"><span><i style="background:var(--orange)"></i>Handled by AI</span><span><i style="background:#6b747e"></i>Handed to you</span></div></div>
+          <div class="card-body" style="flex:1;padding-top:6px"><svg id="chart" width="100%" height="100%"></svg></div>
+        </div>
+        <div class="card" style="flex:1">
+          <div class="card-head"><div class="card-title">Top question types</div><span class="card-sub">Auto-categorised by AI</span></div>
+          <div class="card-body" id="questions" style="padding-top:10px"></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card resolve">
+          <div class="ring"><span>94%</span></div>
+          <div><b>Resolved without you</b><div class="muted" style="margin-top:4px;font-size:13px">Only 76 of 1,247 chats needed a human this month.</div></div>
+        </div>
+        <div class="card" style="flex:1">
+          <div class="card-head"><div class="card-title"><span class="ico" id="globe"></span>Languages spoken</div></div>
+          <div class="card-body"><div class="stack" id="stack"></div><div id="langs"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="shell.js"></script>
+<script>
+// ---- Edit the fake data here ----
+const stats = [
+  { label: "Messages handled", value: "1,247", delta: "+32%", icon: "message", hero: true },
+  { label: "Avg reply time", value: "4", unit: "s", delta: "−2h 41m", icon: "zap", vs: "vs. manual" },
+  { label: "Bookings captured", value: "38", delta: "+11", icon: "calendar" },
+  { label: "Hours saved", value: "62", unit: "h", delta: "+18h", icon: "hourglass" },
+];
+const questions = [
+  ["Pricing", "“How much is…”", 34],
+  ["Availability & booking", "“Free on Saturday?”", 28],
+  ["Opening hours", "“Open on Sunday?”", 14],
+  ["Payment & slips", "“Sent the transfer”", 11],
+  ["Location & parking", "“Where are you?”", 8],
+];
+const languages = [
+  ["EN", "English", "", 41, "#ff6b1a"],
+  ["ES", "Spanish", "Español", 22, "#25d366"],
+  ["AR", "Arabic", "العربية", 15, "#4c9aff"],
+  ["ZH", "Chinese", "中文", 12, "#c86dd7"],
+  ["HI", "Hindi", "हिन्दी", 10, "#f5b83d"],
+];
+// 30 days of messages, scaled so the AI series sums to exactly 1,247.
+const raw = [22,25,24,29,33,20,18,27,30,31,34,38,26,23,33,36,35,39,43,31,28,40,44,42,47,51,38,35,49,55];
+const total = 1247, sum = raw.reduce((a, b) => a + b, 0);
+const ai = raw.map(v => Math.round(v * total / sum));
+const human = raw.map((v, i) => Math.max(1, Math.round(v * 0.06 + (i % 4 === 0 ? 1.5 : 0))));
+const startDate = new Date(2026, 9, 14);
+// ---------------------------------
+
+function spark(vals, color) {
+  const max = Math.max(...vals), min = Math.min(...vals);
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * 110},${36 - ((v - min) / (max - min)) * 32}`).join(" ");
+  return `<svg class="spark" viewBox="0 0 110 40"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/></svg>`;
+}
+const sparks = [raw.slice(-12), [9,8,8,7,6,6,5,5,4,4,4,4], [1,2,2,1,3,2,3,4,3,4,5,5], [2,3,3,4,4,5,5,6,6,7,7,8]];
+document.getElementById("stats").innerHTML = stats.map((s, i) => `
+  <div class="card stat ${s.hero ? "hero" : ""}">
+    <div class="lbl"><span class="ico">${ic(s.icon)}</span>${s.label}</div>
+    <div class="val">${s.value}${s.unit ? `<small>${s.unit}</small>` : ""}</div>
+    <span class="delta">${ic("trend")}${s.delta}</span><span class="vs">${s.vs || "vs. last month"}</span>
+    ${spark(sparks[i], s.hero ? "#ff6b1a" : "#25d366")}
+  </div>`).join("");
+
+document.getElementById("questions").innerHTML = questions.map(([n, ex, p]) => `
+  <div class="qrow"><span class="n">${n}</span><div class="bar"><i style="width:${p / 34 * 100}%;opacity:${0.45 + p / 34 * 0.55}"></i></div><span class="v">${p}%</span></div>`).join("");
+
+document.getElementById("stack").innerHTML = languages.map(l => `<i style="flex:${l[3]};background:${l[4]}"></i>`).join("");
+document.getElementById("langs").innerHTML = languages.map(([c, n, nat, p, col]) => `
+  <div class="lang"><span class="code" style="box-shadow:inset 3px 0 0 ${col}">${c}</span><span>${n}<span class="native">${nat}</span></span><span class="pct">${p}%</span></div>`).join("");
+
+// Line chart
+(function () {
+  const svg = document.getElementById("chart");
+  const W = svg.clientWidth, H = svg.clientHeight, padL = 34, padB = 24, padT = 10;
+  const max = 70, n = ai.length;
+  const x = i => padL + (i / (n - 1)) * (W - padL - 8);
+  const y = v => padT + (1 - v / max) * (H - padT - padB);
+  let g = "";
+  for (let v = 0; v <= max; v += 20) {
+    g += `<line x1="${padL}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(255,255,255,0.06)"/>`;
+    g += `<text x="${padL - 10}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+  }
+  [0, 7, 14, 21, 29].forEach(i => {
+    const d = new Date(startDate); d.setDate(d.getDate() + i);
+    g += `<text x="${x(i)}" y="${H - 4}" text-anchor="${i === 29 ? "end" : i === 0 ? "start" : "middle"}">${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</text>`;
+  });
+  const line = arr => arr.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join("");
+  const area = line(ai) + `L${x(n - 1)},${y(0)}L${x(0)},${y(0)}Z`;
+  const last = n - 1;
+  svg.innerHTML = `
+    <defs><linearGradient id="ga" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#ff6b1a" stop-opacity=".35"/><stop offset="1" stop-color="#ff6b1a" stop-opacity="0"/></linearGradient></defs>
+    ${g}
+    <path d="${area}" fill="url(#ga)"/>
+    <path d="${line(human)}" fill="none" stroke="#6b747e" stroke-width="2" stroke-dasharray="4 4"/>
+    <path d="${line(ai)}" fill="none" stroke="#ff6b1a" stroke-width="2.5" stroke-linejoin="round"/>
+    <line x1="${x(last)}" x2="${x(last)}" y1="${y(ai[last])}" y2="${y(0)}" stroke="rgba(255,107,26,.4)" stroke-dasharray="3 3"/>
+    <circle cx="${x(last)}" cy="${y(ai[last])}" r="5" fill="#ff6b1a" stroke="#1f2630" stroke-width="3"/>
+    <g transform="translate(${x(last) - 118},${y(ai[last]) - 18})">
+      <rect width="104" height="38" rx="8" fill="#2c3542" stroke="rgba(255,255,255,.1)"/>
+      <text x="12" y="16" style="fill:#9aa3ad;font-size:11px">Today</text>
+      <text x="12" y="31" style="fill:#fff;font-size:13px;font-weight:700">${ai[last]} messages</text>
+    </g>`;
+})();
+
+document.getElementById("globe").innerHTML = ic("globe");
+document.getElementById("range").insertAdjacentHTML("afterbegin", ic("calendar"));
+document.getElementById("export").insertAdjacentHTML("afterbegin", ic("download"));
+</script>
+</body>
+</html>
