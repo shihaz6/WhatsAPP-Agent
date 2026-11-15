@@ -7,7 +7,7 @@ import type { Language } from "./types";
 
 // A key number. `tone` only colours a small status dot, so the page stays calm.
 export function Stat({ label, value, note, tone = "neutral" }: {
-  label: string; value: ReactNode; note?: ReactNode; tone?: "neutral" | "green" | "amber" | "red";
+  label: string; value: ReactNode; note?: ReactNode; tone?: "neutral" | "green" | "amber" | "red" | "blue";
 }) {
   return (
     <div className="stat">

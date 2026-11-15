@@ -63,7 +63,7 @@ function createHandler({ db, whatsapp, agent, log = console }) {
     // The tools it ran and any agent error go on the first reply of the turn.
     const logReply = (reply, i, { id, status, error = null }) => db.logMessage({
       id: id ?? `local.${crypto.randomUUID()}`, waId: contact.wa_id, direction: "out", type: reply.type, body: reply.body,
-      status, error, ...(i === 0 ? { tools: result.toolLog, agentError: result.failed ? (result.error ?? "Agent failed") : null } : {}),
+      status, error, sentBy: "bot", ...(i === 0 ? { tools: result.toolLog, agentError: result.failed ? (result.error ?? "Agent failed") : null } : {}),
     });
 
     if (!configured) {

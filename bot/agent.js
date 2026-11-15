@@ -66,14 +66,62 @@ function unsupportedFacts(text, sources, classTitles) {
   return [...amounts, ...classes];
 }
 
+// Offers of things the bot can't do. The prompt forbids them, but on the phone the model kept
+// writing "If you'd like to add Shenali..." anyway, so replies are checked before sending.
+// English wording only; offering hand_off_to_teacher ("I can pass this to the teacher") is fine.
+const FALSE_PROMISES = [
+  /\bif you(?:'|’)?d like (?:me )?to (?:add|register|enrol|enroll|sign (?:her|him|them) up)\b[^.!?\n]*/i,
+  /\b(?:I(?:'|’)ll|I will|I can|let me)\s+(?:add|register|enrol|enroll|book|reserve|note|arrange|forward|verify|check (?:the|your) slip)\b[^.!?\n]*/i,
+  /\b(?:waitlist|waiting list)\b/i,
+  /\be-?mail\b/i,
+  /\bdetails you already have\b/i,
+];
+// "...enrol her? I'll pass the request on to the teacher" is the handoff, which is allowed.
+const VIA_TEACHER = /\b(?:pass|hand|forward|send)\w*\b[^.!?\n]*\bteacher\b|\bteacher\b[^.!?\n]*\b(?:will|can) (?:reply|contact|help|confirm)/i;
+// Saying it's done is only true if hand_off_to_teacher really ran this turn.
+const HANDED_OFF_CLAIM = /\b(?:I(?:'|’)ve|I have)\s+(?:passed|forwarded|sent|told|let|informed|notified)\b[^.!?\n]*\bteacher\b[^.!?\n]*|\bthe teacher has (?:your|the) (?:message|request|details)[^.!?\n]*/i;
+function falsePromises(text, { handedOff = false } = {}) {
+  const found = FALSE_PROMISES.map((re, i) => {
+    const m = text.match(re)?.[0];
+    if (!m) return null;
+    if (i < 2 && VIA_TEACHER.test(sentenceAround(text, m))) return null;
+    return m;
+  }).filter(Boolean);
+  const claim = handedOff ? null : text.match(HANDED_OFF_CLAIM)?.[0];
+  return claim ? [...found, claim] : found;
+}
+// For a number with no students, any "no records for X" / "X isn't enrolled" is about someone
+// else's child: untrue or revealing either way (seen: "there are no records for Shenali De Silva",
+// who is registered under another number). Only the privacy answer is right.
+const ABOUT_SOMEONE_ELSE = /\b(?:there (?:are|is) no (?:records?|details|information|enrol\w*) (?:for|about|of|on)|(?:she|he|they) (?:is|are|isn['’]?t|aren['’]?t|is not|are not) (?:registered|enrolled|listed)|isn['’]?t (?:registered|enrolled|listed)|can(?:not|['’]?t) see)\b[^.!?\n]*/i;
+const PRIVACY_LINE = "I can only share details of students registered under this WhatsApp number.";
+function aboutSomeoneElse(text, { hasStudents }) {
+  return hasStudents ? [] : [text.match(ABOUT_SOMEONE_ELSE)?.[0]].filter(Boolean);
+}
+
+function sentenceAround(text, phrase) {
+  return text.split(/(?<=[.!?])\s+|\n+/).find((s) => s.includes(phrase)) ?? phrase;
+}
+// The reply without the sentences that contain the given phrases ("" if none are left).
+function removeSentences(text, phrases) {
+  return text.split(/(?<=[.!?])\s+|\n+/).filter((s) => !phrases.some((p) => s.includes(p))).join(" ").trim();
+}
+
 function systemPrompt({ tutor, contact, students, now, db }) {
   const local = new Intl.DateTimeFormat("en-GB", {
     timeZone: tutor?.timezone || "Asia/Colombo", weekday: "long", year: "numeric", month: "long",
     day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).format(now);
-  const who = students.length
-    ? `Students linked to this number:\n${students.map((s) => `- ${describeStudent(db, s)}`).join("\n")}`
-    : "No students are linked to this number yet (a new enquiry).";
+  // The privacy answer sits right next to the student list: seen on the phone, a repeated
+  // question was answered from this line and the chat history without calling any tool, so a
+  // rule that only lives in a tool result never reached the model.
+  const who = (students.length
+    ? `Students linked to this number (the ONLY students you may discuss):\n${students.map((s) => `- ${describeStudent(db, s)}`).join("\n")}`
+    : "No students are linked to this number yet (a new enquiry).") +
+    `\nAsked about anyone not listed here (e.g. "what classes is <name> in?"), the whole answer is: you can only share details of students registered under this WhatsApp number. ` +
+    "Don't say whether that person exists, is enrolled or what you can or can't \"see\", and don't offer to add or register them. " +
+    "If it's their own child and they want them registered or enrolled, offer to pass that to the teacher (hand_off_to_teacher). " +
+    "If an earlier reply in this chat answered differently, don't repeat it.";
 
   const tutorName = tutor?.name ?? "the tutor";
   return `You are the WhatsApp assistant for ${tutorName}, a tutor in Sri Lanka.
@@ -87,7 +135,7 @@ Rules:
 - The class list is complete. A subject, grade or class that isn't in it is not offered: say so plainly (e.g. "The teacher doesn't teach Geography") and mention what is offered for that level, if anything.
 - Which tool: session dates, cancellations, reschedules ("this Saturday", "next class") -> get_class_schedule or list_classes; bank and payment details -> get_tutor_info (give the bank details it returns; never say "the details you already have"); fee records and what they owe -> get_my_fees; common questions (missed classes, refunds, trials) -> get_faqs; one-to-one -> get_one_to_one_info; their students -> get_my_family; notes and recordings -> get_my_materials.
 - Privacy: only discuss the students linked to this number (listed above). If they ask about anyone else, say you can only share details of students registered under this number. Don't say whether that person exists or not.
-- You can look things up and hand the chat to the teacher with hand_off_to_teacher. Nothing else. You cannot enrol, book trials or one-to-ones, add anyone to a waitlist, check payment slips or photos, or send links or files you don't have. Never offer or promise those ("I'll forward it", "I'll note that", "send me the name to enrol", "let me know once you've paid"), and never suggest other ways to reach the teacher (email, phone, office) unless a tool gives them.
+- You can look things up and hand the chat to the teacher with hand_off_to_teacher. Nothing else. You cannot enrol, add or register a student, book trials or one-to-ones, add anyone to a waitlist, check payment slips or photos, or send links or files you don't have. Never offer or promise those ("I'll forward it", "I'll note that", "send me the name to enrol", "if you'd like to add her", "let me know once you've paid"), and never suggest other ways to reach the teacher (email, phone, office) unless a tool gives them.
 - Use hand_off_to_teacher when they ask for the teacher or a person; want to enrol, book a trial or a one-to-one (first get the student's name, grade and class, then hand off); send a photo or document (you can't see it; it may be a payment slip); say they paid but get_my_fees shows no record; complain; or ask something only the teacher can answer. Only after the tool succeeds, tell them the teacher has their message and will reply in this chat. Never claim that otherwise.
 - Never mention a "database", "system", "records" or "tools" to them. Say "the teacher's classes" or just answer.
 ${languageRules(contact.language)}
@@ -196,6 +244,7 @@ function createAgent({ db, llm, log = console, maxRounds = 6, historyLimit = 16,
     // What a reply's facts may come from: the class list and tool results (not the prompt's
     // wording examples, which contain sample amounts).
     const catalog = classCatalog(db, db.getTutor());
+    const hasStudents = () => db.listStudents(contact.id).length > 0;
     let error;
     let rechecked = false;
 
@@ -219,19 +268,37 @@ function createAgent({ db, llm, log = console, maxRounds = 6, historyLimit = 16,
         const text = toWhatsApp(message.content);
         if (!text) { error = "The model returned an empty answer"; break; }
 
-        // One chance to fix made-up amounts or classes before anything is sent.
+        // One chance to fix made-up amounts or classes, or offers it can't keep, before sending.
         const sources = [catalog, ...messages.filter((m) => m.role === "tool").map((m) => m.content)].join("\n");
         const madeUp = unsupportedFacts(text, sources, classTitles);
-        if (madeUp.length && !rechecked && round < maxRounds - 1) {
+        const promises = falsePromises(text, { handedOff: toolLog.some((t) => t.name === "hand_off_to_teacher" && t.ok) });
+        const privacy = aboutSomeoneElse(text, { hasStudents: hasStudents() });
+        if ((madeUp.length || promises.length || privacy.length) && !rechecked && round < maxRounds - 1) {
           rechecked = true;
-          log.warn(`Agent reply for ${contact.wa_id} had facts not in the data, asking again:`, madeUp);
-          toolLog.push({ name: "fact_check", ok: false, error: `Not in the data, answered again: ${madeUp.join(", ")}` });
+          const problems = [
+            madeUp.length ? `It mentions ${madeUp.map((f) => `"${f}"`).join(", ")}, which is not in the class list or any tool result.` : "",
+            promises.length ? `It offers something you can't do: ${promises.map((f) => `"${f}"`).join(", ")}. You can only look things up and hand the chat to the teacher.` : "",
+            privacy.length ? `It says something about a student who isn't linked to this number (${privacy.map((f) => `"${f}"`).join(", ")}). No students are linked here, so say only that you can share details just for students registered under this WhatsApp number, without saying whether that person exists or is enrolled.` : "",
+          ].filter(Boolean).join(" ");
+          log.warn(`Agent reply for ${contact.wa_id} not sent, asking again:`, [...madeUp, ...promises, ...privacy]);
+          toolLog.push({ name: "fact_check", ok: false, error: `Answered again. ${[...madeUp.map((f) => `Not in the data: ${f}`), ...promises.map((f) => `Can't do: ${f}`), ...privacy.map((f) => `About someone else's student: ${f}`)].join("; ")}` });
           messages.push({ role: "assistant", content: message.content });
-          messages.push({ role: "system", content: `That reply was NOT sent. It mentions ${madeUp.map((f) => `"${f}"`).join(", ")}, which is not in the class list or any tool result. Write the reply again using only facts from the class list and tool results (call a tool if you need one). If something isn't offered, say so.` });
+          messages.push({ role: "system", content: `That reply was NOT sent. ${problems} Write the reply again using only facts from the class list and tool results (call a tool if you need one). If something isn't offered, say so.` });
           continue;
         }
         if (madeUp.length) log.warn(`Agent reply for ${contact.wa_id} still has facts not in the data:`, madeUp);
-        return { replies: [{ type: "text", body: text }], toolCalls, toolLog };
+        // Still wrong after the retry: drop those sentences rather than send them. Comments about
+        // someone else's student are replaced by the privacy line (the patterns are English, so a
+        // match means the reply is in English).
+        let body = text;
+        if (promises.length || privacy.length) {
+          const kept = removeSentences(text, [...promises, ...privacy]);
+          body = privacy.length
+            ? `${PRIVACY_LINE} ${kept.startsWith(PRIVACY_LINE) ? kept.slice(PRIVACY_LINE.length).trim() : kept}`.trim()
+            : kept || text;
+        }
+        if (body !== text) toolLog.push({ name: "fact_check", ok: false, error: `Removed: ${[...promises, ...privacy].join("; ")}` });
+        return { replies: [{ type: "text", body }], toolCalls, toolLog };
       }
       error ??= `No answer within ${maxRounds} rounds of tool calls`;
       log.warn(`Agent gave no answer for ${contact.wa_id}: ${error}`, toolCalls);
@@ -245,4 +312,4 @@ function createAgent({ db, llm, log = console, maxRounds = 6, historyLimit = 16,
   return { respond };
 }
 
-module.exports = { createAgent, systemPrompt, languageReminder, toWhatsApp, unsupportedFacts, FALLBACK, FALLBACKS };
+module.exports = { createAgent, systemPrompt, languageReminder, toWhatsApp, unsupportedFacts, falsePromises, FALLBACK, FALLBACKS };

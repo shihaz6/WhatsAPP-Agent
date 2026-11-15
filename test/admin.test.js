@@ -142,6 +142,7 @@ describe("actions", () => {
     assert.equal(r.status, 200);
     assert.deepEqual(sent, [{ to: PERERA, type: "text", body: "Hello, this is the teacher." }]);
     assert.equal(db.recentMessages(PERERA, 1)[0].body, "Hello, this is the teacher.");
+    assert.equal(db.recentMessages(PERERA, 1)[0].sent_by, "teacher");
     assert.equal((await call("POST", `/admin/api/conversations/${PERERA}/reply`, { body: { text: "  " } })).status, 400);
   });
 

@@ -103,8 +103,11 @@ function SignIn({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="signin">
-      <form className="signin-card" onSubmit={submit}>
+      <div className="signin-brand">
         <Brand />
+        <div className="signin-tagline">Where AI Meets Business</div>
+      </div>
+      <form className="signin-card" onSubmit={submit}>
         <div>
           <h1 className="signin-title">Sign in</h1>
           <p className="signin-sub">Enter the access key to manage conversations, classes and payments.</p>

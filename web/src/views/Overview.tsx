@@ -28,7 +28,7 @@ export function Overview({ onAuthError }: { onAuthError: () => void }) {
             counts.undelivered_24h ? `${counts.undelivered_24h} not delivered` : "",
             counts.agent_errors_24h ? `${counts.agent_errors_24h} agent ${counts.agent_errors_24h === 1 ? "error" : "errors"}` : "",
           ].filter(Boolean).join(" · ")} />
-        <Stat label="With the teacher" value={counts.paused} tone={counts.paused ? "amber" : "green"}
+        <Stat label="With the teacher" value={counts.paused} tone={counts.paused ? "blue" : "green"}
           note={counts.paused ? "Bot paused on these chats" : "Bot is handling every chat"} />
         <Stat label="Slips to review" value={counts.slips_waiting} tone={counts.slips_waiting ? "amber" : "green"}
           note={<a href={href("payments")}>Review payments</a>} />
@@ -60,7 +60,7 @@ export function Overview({ onAuthError }: { onAuthError: () => void }) {
                         <div className="row-title">{displayName(c)}</div>
                         <div className="row-sub ellipsis">{c.paused_reason ?? "Handed to the teacher"}</div>
                       </div>
-                      <span className="badge badge-amber">Bot paused</span>
+                      <span className="badge badge-blue">With the teacher</span>
                       <span className="muted small nowrap">{ago(c.paused_at)}</span>
                     </a>
                   </li>
@@ -73,7 +73,7 @@ export function Overview({ onAuthError }: { onAuthError: () => void }) {
                         <div className="row-title">{p.student_name}</div>
                         <div className="row-sub ellipsis">{p.class_title} · {p.month}</div>
                       </div>
-                      <span className="badge badge-blue">Slip</span>
+                      <span className="badge badge-amber">Slip to review</span>
                       <span className="small num">{money(p.amount, currency)}</span>
                     </a>
                   </li>
@@ -103,7 +103,7 @@ function SessionList({ sessions }: { sessions: Session[] }) {
         <div key={date} className="day">
           <div className="day-label">
             {classDate(date)}
-            {date === now && <span className="badge badge-green">Today</span>}
+            {date === now && <span className="badge badge-gold">Today</span>}
           </div>
           {list.map((s) => (
             <div key={`${s.class_id}-${s.date}-${s.status}`} className={`session session-${s.status}`}>

@@ -70,7 +70,7 @@ function ChatItem({ c, active }: { c: ConversationSummary; active: boolean }) {
               {c.last_direction === "out" && <span className="muted">↳ </span>}
               {c.last_at ? plainPreview(messageText(c.last_type, c.last_body)) : <em className="muted">No messages yet</em>}
             </span>
-            {c.bot_paused ? <span className="badge badge-red">Paused</span> : <LangChip language={c.language} />}
+            {c.bot_paused ? <span className="badge badge-blue">With teacher</span> : <LangChip language={c.language} />}
           </div>
         </div>
       </a>
@@ -129,7 +129,7 @@ function Thread({ waId, onAuthError, onChanged }: { waId: string; onAuthError: (
             </optgroup>
           </select>
         </label>
-        <button className={`btn btn-sm ${contact.bot_paused ? "btn-soft" : "btn-warn"}`} onClick={togglePause} disabled={busy !== null}>
+        <button className={`btn btn-sm ${contact.bot_paused ? "btn-ai" : "btn-info"}`} onClick={togglePause} disabled={busy !== null}>
           <Glyph name="bot" size={15} />
           {contact.bot_paused ? "Hand back to bot" : "Take over"}
         </button>
@@ -140,7 +140,7 @@ function Thread({ waId, onAuthError, onChanged }: { waId: string; onAuthError: (
       </header>
 
       {contact.bot_paused ? (
-        <div className="banner banner-amber">
+        <div className="banner banner-blue">
           <strong>Bot paused.</strong> {contact.paused_reason ?? ""} You're replying to this chat; the bot stays quiet until you hand it back.
         </div>
       ) : null}
@@ -174,12 +174,15 @@ function Messages({ messages }: { messages: Message[] }) {
         return (
           <div key={m.id} className="msg-wrap">
             {divider && <div className="day-divider"><span>{day}</span></div>}
-            <div className={`msg msg-${m.direction} ${m.body ? "" : "msg-media"} ${undelivered(m) ? "msg-undelivered" : ""}`}>
+            <div className={`msg msg-${m.direction} ${m.sent_by === "teacher" ? "msg-teacher" : ""} ${m.body ? "" : "msg-media"} ${undelivered(m) ? "msg-undelivered" : ""}`}>
               <div className="msg-body">{formatWhatsApp(messageText(m.type, m.body))}</div>
               <div className="msg-meta num">
+                {m.sent_by === "bot" && <span className="msg-who msg-who-bot">AI</span>}
+                {m.sent_by === "teacher" && <span className="msg-who msg-who-teacher">Teacher</span>}
                 {m.status === "failed" && <span className="msg-flag">Not delivered · </span>}
                 {m.status === "not_sent" && <span className="msg-flag">Not sent · </span>}
                 {clock(m.created_at)}
+                {m.status === "sent" && <span className="msg-tick" title="Sent on WhatsApp">✓</span>}
               </div>
             </div>
             <MessageNotes m={m} />
@@ -271,7 +274,7 @@ function Composer({ waId, paused, onSent, onTakeOver }: {
     return (
       <div className="composer composer-locked">
         <span className="muted"><Glyph name="bot" size={15} /> The bot is answering this chat.</span>
-        <button className="btn btn-sm btn-warn" onClick={onTakeOver}>Take over to reply</button>
+        <button className="btn btn-sm btn-info" onClick={onTakeOver}>Take over to reply</button>
       </div>
     );
   }

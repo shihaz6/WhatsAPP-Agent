@@ -39,6 +39,8 @@ export interface Message {
   tools: string | null;
   /** Set when this is the fallback reply because the agent failed. */
   agent_error: string | null;
+  /** Outgoing: who wrote it. Null for older rows. */
+  sent_by: "bot" | "teacher" | null;
 }
 
 export interface ToolRun {

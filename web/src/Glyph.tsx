@@ -23,12 +23,12 @@ export function Glyph({ name, size = 18, className }: { name: GlyphName; size?: 
   );
 }
 
-// AlchemyX mark: a green tile with the X.
+// AlchemyX mark: an Alchemy-gold tile with a navy X (reads on navy and on white).
 export function Logo({ size = 30 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" className="logo-mark">
-      <rect width="32" height="32" rx="8" fill="var(--accent)" />
-      <path d="M10.5 10.5l11 11M21.5 10.5l-11 11" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" />
+      <rect width="32" height="32" rx="8" fill="var(--gold)" />
+      <path d="M10.5 10.5l11 11M21.5 10.5l-11 11" stroke="var(--navy)" strokeWidth="2.6" strokeLinecap="round" />
     </svg>
   );
 }

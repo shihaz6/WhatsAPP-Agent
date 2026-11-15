@@ -194,7 +194,8 @@ CREATE TABLE IF NOT EXISTS messages (
   status     TEXT CHECK (status IN ('sent', 'failed', 'not_sent')), -- failed = WhatsApp refused it; not_sent = never tried
   error      TEXT,  -- why it failed / wasn't sent
   tools      TEXT,  -- JSON [{ name, ok, error? }]: tools the agent ran for this reply
-  agent_error TEXT  -- set when this is the fallback message because the agent failed
+  agent_error TEXT, -- set when this is the fallback message because the agent failed
+  sent_by    TEXT CHECK (sent_by IN ('bot', 'teacher'))  -- outgoing: who wrote it (NULL for older rows)
 );
 
 CREATE INDEX IF NOT EXISTS idx_students_contact   ON students(contact_id);

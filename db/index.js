@@ -57,6 +57,7 @@ const MESSAGE_COLUMNS = {
   error: "TEXT",
   tools: "TEXT",
   agent_error: "TEXT",
+  sent_by: "TEXT CHECK (sent_by IN ('bot', 'teacher'))",
 };
 function addColumns(conn, table, columns) {
   const have = new Set(conn.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
@@ -534,7 +535,7 @@ function listFaqs() {
 
 // Recent messages with one WhatsApp number, oldest first (for the agent's chat history).
 function recentMessages(waId, limit = 16) {
-  return q(`SELECT id, direction, type, body, created_at, status, error, tools, agent_error FROM messages WHERE wa_id = ?
+  return q(`SELECT id, direction, type, body, created_at, status, error, tools, agent_error, sent_by FROM messages WHERE wa_id = ?
             ORDER BY rowid DESC LIMIT ?`).all(waId, limit).map(plain).reverse();
 }
 
@@ -562,11 +563,11 @@ function setConversation(contactId, state, context = {}) {
 }
 
 // Returns false if this message id was already logged (a webhook retry).
-// status/error/tools/agentError are for outgoing replies; see the messages table in schema.sql.
-function logMessage({ id, waId, direction, type, body, status = null, error = null, tools = null, agentError = null }) {
-  return q(`INSERT INTO messages (id, wa_id, direction, type, body, status, error, tools, agent_error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
-    .run(id, waId, direction, type, body ?? null, status, error, tools?.length ? JSON.stringify(tools) : null, agentError)
+// status/error/tools/agentError/sentBy are for outgoing replies; see the messages table in schema.sql.
+function logMessage({ id, waId, direction, type, body, status = null, error = null, tools = null, agentError = null, sentBy = null }) {
+  return q(`INSERT INTO messages (id, wa_id, direction, type, body, status, error, tools, agent_error, sent_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
+    .run(id, waId, direction, type, body ?? null, status, error, tools?.length ? JSON.stringify(tools) : null, agentError, sentBy)
     .changes > 0;
 }
 

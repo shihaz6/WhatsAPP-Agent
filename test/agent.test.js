@@ -7,7 +7,7 @@ const { test, beforeEach, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
 const { seed } = require("../db/seed");
-const { createAgent, systemPrompt, toWhatsApp, unsupportedFacts, FALLBACK, FALLBACKS } = require("../bot/agent");
+const { createAgent, systemPrompt, toWhatsApp, unsupportedFacts, falsePromises, FALLBACK, FALLBACKS } = require("../bot/agent");
 const { detectLanguage } = require("../bot/language");
 const { createTools } = require("../bot/tools");
 
@@ -386,6 +386,103 @@ describe("no made-up facts (phone test, 15 Nov)", () => {
     const p = systemPrompt({ tutor: db.getTutor(), contact: c, students: [], now: NOW, db });
     for (const rule of [/waitlist/, /I'll forward it/, /email, phone, office/, /details you already have/, /Don't say whether that person exists/, /Never mention a "database"/, /never "2026-11-17"/])
       assert.match(p, rule);
+  });
+});
+
+describe("asking about another family's student (phone test, 16 Nov)", () => {
+  const run = (waId) => createTools({ db, contact: contact(waId), now: NOW }).run("get_my_family", "{}");
+
+  test("no students here: the result says how to answer, without saying whether she exists", () => {
+    const r = run("94779990001"); // new number; Shenali de Silva belongs to another contact
+    assert.deepEqual(r.students, []);
+    assert.match(r.note, /registered under this WhatsApp number/);
+    assert.match(r.note, /Don't say whether that student exists/);
+    assert.match(r.note, /don't offer to add or register anyone/);
+    assert.match(r.note, /hand_off_to_teacher/);
+    assert.doesNotMatch(JSON.stringify(r), /Shenali/);
+  });
+
+  test("with students: the same rule comes with the list, and only their own students are in it", () => {
+    const r = run(PERERA);
+    assert.match(r.note, /not listed here/);
+    assert.deepEqual(r.students.map((s) => s.name).sort(), ["Dilini Perera", "Kasun Perera"]);
+  });
+
+  test("the privacy answer is in the prompt itself, so it applies even when no tool is called", () => {
+    for (const waId of ["94779990001", PERERA]) {
+      const c = contact(waId);
+      const p = systemPrompt({ tutor: db.getTutor(), contact: c, students: db.listStudents(c.id), now: NOW, db });
+      assert.match(p, /Asked about anyone not listed here.*only share details of students registered under this WhatsApp number/);
+      assert.match(p, /don't offer to add or register them/);
+      assert.match(p, /If an earlier reply in this chat answered differently, don't repeat it/);
+    }
+  });
+
+  test("falsePromises: offers it can't keep are caught; offering the teacher handoff is fine", () => {
+    assert.deepEqual(falsePromises("If you’d like to add Shenali De Silva or have any other questions, just let me know!"),
+      ["If you’d like to add Shenali De Silva or have any other questions, just let me know"]);
+    assert.equal(falsePromises("I'll forward it for verification.").length, 1);
+    assert.deepEqual(falsePromises("If you’d like to enrol her, tell me the class and I’ll pass the request on to the teacher."), [], "offering the handoff is fine");
+    assert.equal(falsePromises("I've passed your request to the teacher.").length, 1, "claiming it without the tool is not");
+    assert.deepEqual(falsePromises("I've passed your request to the teacher.", { handedOff: true }), []);
+    assert.equal(falsePromises("You can join the waitlist.").length, 1);
+    assert.equal(falsePromises("Send the slip via email.").length, 1);
+    assert.equal(falsePromises("Transfer to the details you already have.").length, 1);
+    assert.deepEqual(falsePromises("I can only share details of students registered under this WhatsApp number. If she's your child, I can pass that to the teacher."), []);
+  });
+
+  test("a reply offering to add a student is not sent: the model answers again", async () => {
+    const llm = scriptedLLM([
+      "I can only share details of students registered under this WhatsApp number. If you’d like to add Shenali De Silva, just let me know!",
+      "I can only share details of students registered under this WhatsApp number.",
+    ]);
+    const r = await agentWith(llm).respond({ contact: contact("94779990001"), incoming: incoming("94779990001", "what classes is Shenali de Silva in?") });
+    assert.equal(r.replies[0].body, "I can only share details of students registered under this WhatsApp number.");
+    assert.match(llm.requests[1].messages.at(-1).content, /NOT sent[\s\S]*offers something you can't do/);
+  });
+
+  test("no students here: 'no records for <name>' is not sent; the model answers again", async () => {
+    const NEW = "94779990001";
+    const llm = scriptedLLM([
+      "I can only share details of students registered under this WhatsApp number, and there are no records for Shenali De Silva at the moment.",
+      "I can only share details of students registered under this WhatsApp number.",
+    ]);
+    const r = await agentWith(llm).respond({ contact: contact(NEW), incoming: incoming(NEW, "Shenali de Silva classes?") });
+    assert.equal(r.replies[0].body, "I can only share details of students registered under this WhatsApp number.");
+    assert.match(llm.requests[1].messages.at(-1).content, /isn't linked to this number/);
+  });
+
+  test("still about someone else's student after the retry: that sentence becomes the privacy line", async () => {
+    const NEW = "94779990001";
+    const slip = "I’m sorry, but there are no students linked to this contact, so I can’t see any subjects that Shenali De Silva is enrolled in.";
+    const offer = "Would you like to register her? Tell me the class and I’ll pass the request to the teacher.";
+    const llm = scriptedLLM([slip, `${slip}
+
+${offer}`]);
+    const r = await agentWith(llm).respond({ contact: contact(NEW), incoming: incoming(NEW, "Shenali de Silva subjects?") });
+    assert.equal(r.replies[0].body, `I can only share details of students registered under this WhatsApp number. ${offer}`);
+    assert.ok(r.toolLog.some((t) => t.name === "fact_check" && /Removed/.test(t.error)));
+  });
+
+  test("a parent with students can still hear that their own child isn't enrolled in something", async () => {
+    const llm = scriptedLLM(["Kasun isn't enrolled in Physics."]);
+    const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "is Kasun in physics?") });
+    assert.equal(r.replies[0].body, "Kasun isn't enrolled in Physics.");
+    assert.equal(llm.requests.length, 1, "no retry");
+  });
+
+  test("if it still offers it after the retry, that sentence is removed", async () => {
+    const offer = "If you’d like to add her, just let me know!";
+    const llm = scriptedLLM([`Only students under this number. ${offer}`, `I can only share details of students registered under this number. ${offer}`]);
+    const r = await agentWith(llm).respond({ contact: contact("94779990001"), incoming: incoming("94779990001", "Shenali?") });
+    assert.equal(r.replies[0].body, "I can only share details of students registered under this number.");
+    assert.ok(r.toolLog.some((t) => t.name === "fact_check" && /Removed/.test(t.error)));
+  });
+
+  test("the prompt lists registering a student as something the bot can't do", () => {
+    const p = systemPrompt({ tutor: db.getTutor(), contact: contact(PERERA), students: [], now: NOW, db });
+    assert.match(p, /add or register a student/);
+    assert.match(p, /if you'd like to add her/);
   });
 });
 

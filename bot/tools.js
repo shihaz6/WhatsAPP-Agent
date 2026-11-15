@@ -109,9 +109,17 @@ function createTools({ db, contact, now = new Date() }) {
       parameters: {},
       run: () => {
         const list = students();
-        if (!list.length) return { students: [], note: "No students are registered under this contact yet." };
+        // Seen on the phone: asked about another family's child, the model said "I can't see
+        // any subjects she is enrolled in. If you'd like to add her...", which is vague and offers
+        // something the bot can't do. Spell out the answer instead.
+        const otherStudents = "If they asked about a student who is not listed here, answer only: you can share " +
+          "details just for students registered under this WhatsApp number. Don't say whether that student exists, " +
+          "is enrolled or not, and don't offer to add or register anyone yourself. If it is their own child and they " +
+          "want them registered or enrolled, offer to pass it to the teacher (hand_off_to_teacher).";
+        if (!list.length) return { students: [], note: `No students are registered under this WhatsApp number yet. ${otherStudents}` };
         const allowed = enrolledClassIds();
         return {
+          note: otherStudents,
           students: list.map((s) => ({
             name: s.name, grade: s.grade, school: s.school,
             classes: db.listEnrollments(s.id).map((e) => ({

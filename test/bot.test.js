@@ -125,6 +125,7 @@ describe("message pipeline", () => {
     await createHandler({ db, whatsapp: wa, agent: fallback, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "hi"));
     const [out] = messagesFor(NEW_NUMBER).filter((m) => m.direction === "out");
     assert.equal(out.status, "sent");
+    assert.equal(out.sent_by, "bot");
     assert.equal(out.id, "wamid.out.1");
     assert.equal(out.agent_error, "Groq API 429: rate limit");
     assert.deepEqual(JSON.parse(out.tools), [{ name: "hand_off_to_team", ok: false, error: "summary is required." }]);

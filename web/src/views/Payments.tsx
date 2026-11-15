@@ -87,7 +87,7 @@ function SlipRow({ p, onDone }: { p: Payment; onDone: () => void }) {
           <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)}
             placeholder="Reason, e.g. “Amount is LKR 2,000, fee is 2,500”" aria-label="Reason for rejecting" />
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRejecting(false)}>Cancel</button>
-          <button className="btn btn-sm btn-warn" disabled={busy || !reason.trim()}>Reject slip</button>
+          <button className="btn btn-sm btn-danger" disabled={busy || !reason.trim()}>Reject slip</button>
         </form>
       )}
       {rejecting && <div className="row-sub">The bot tells the parent this reason when they ask about fees.</div>}
