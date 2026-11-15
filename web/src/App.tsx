@@ -6,12 +6,14 @@ import { Overview } from "./views/Overview";
 import { Conversations } from "./views/Conversations";
 import { Classes } from "./views/Classes";
 import { Payments } from "./views/Payments";
+import { Settings } from "./views/Settings";
 
 const NAV: { id: View; label: string; glyph: GlyphName }[] = [
   { id: "overview", label: "Overview", glyph: "grid" },
   { id: "conversations", label: "Conversations", glyph: "chat" },
   { id: "classes", label: "Classes", glyph: "calendar" },
   { id: "payments", label: "Payments", glyph: "wallet" },
+  { id: "settings", label: "Settings", glyph: "settings" },
 ];
 
 function Brand() {
@@ -76,6 +78,7 @@ export default function App() {
         {route.view === "conversations" && <Conversations {...props} selected={route.arg} />}
         {route.view === "classes" && <Classes {...props} />}
         {route.view === "payments" && <Payments {...props} />}
+        {route.view === "settings" && <Settings {...props} />}
       </main>
     </div>
   );

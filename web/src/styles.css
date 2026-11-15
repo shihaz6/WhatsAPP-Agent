@@ -411,3 +411,64 @@ textarea { resize: vertical; min-height: 44px; line-height: 1.45; }
   .msg { max-width: 88%; }
   .info { width: 100%; }
 }
+
+/* ---------- Editing (Settings, class form, sessions) ---------- */
+.settings-section { display: flex; flex-direction: column; gap: 14px; }
+.settings-head h2 { font-size: 15px; font-weight: 650; }
+.settings-head p { margin-top: 2px; max-width: 70ch; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+.form-grid .span-2 { grid-column: 1 / -1; }
+.field small { font-size: 12px; }
+.form-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; }
+.saved-note { color: var(--green-text); font-size: 13px; font-weight: 600; }
+.inline-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.inline-form input[type="time"], .inline-form input[type="date"] { width: auto; }
+
+.edit-table td { padding: 6px 8px; }
+.edit-table input { width: 100%; min-width: 0; height: 34px; padding: 6px 9px; }
+.edit-table input.w-sm { max-width: 150px; }
+.edit-table td.num input { text-align: right; margin-left: auto; display: block; }
+.edit-table .new-row input { background: var(--subtle); }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; white-space: nowrap; }
+
+.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px 0 11px; border-radius: 999px; background: var(--navy-soft); color: var(--navy); font-size: 13px; font-weight: 500; }
+.chip-x { border: 0; background: none; width: 22px; height: 22px; border-radius: 50%; cursor: pointer; color: var(--text-2); font-size: 16px; line-height: 1; }
+.chip-x:hover { background: var(--surface); color: var(--red-text); }
+
+.faq-list { display: flex; flex-direction: column; }
+.faq { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--border); }
+.faq:first-child { border-top: 0; padding-top: 0; }
+.faq-answer { color: var(--text-2); font-size: 13px; margin-top: 2px; white-space: pre-wrap; }
+.faq-editing { flex-direction: column; align-items: stretch; gap: 10px; }
+.add-btn { align-self: flex-start; margin-top: 8px; color: var(--gold-text); }
+
+.card-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: auto; padding-top: 4px; border-top: 1px solid var(--border); }
+.ns-actions { margin-left: auto; display: inline-flex; gap: 10px; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--text-2); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.link-btn:hover { color: var(--gold-text); text-decoration: underline; text-underline-offset: 3px; }
+.ns-form { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; padding: 10px; margin-top: 4px; border-radius: var(--radius-sm); background: var(--subtle); }
+
+.overlay { position: fixed; inset: 0; z-index: 50; background: rgba(11, 18, 32, 0.55); display: grid; place-items: center; padding: 16px; overflow-y: auto; }
+.dialog { width: min(620px, 100%); background: var(--surface); border-radius: 16px; padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.45); }
+.dialog h2 { font-size: 18px; font-weight: 650; }
+
+@media (max-width: 780px) {
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .dialog { padding: 18px 16px; }
+  .edit-table input.w-sm { max-width: none; }
+}
+
+/* ---------- Slips and other photos ---------- */
+.media-thumb { display: block; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--subtle); cursor: zoom-in; }
+.media-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.media-md { width: 220px; height: 160px; margin-bottom: 4px; }
+.media-sm { width: 72px; height: 72px; flex: none; }
+.media-loading { animation: shimmer 1.4s infinite; background: linear-gradient(90deg, var(--subtle), var(--hover), var(--subtle)); background-size: 200% 100%; }
+.media-missing { display: grid; place-items: center; text-align: center; font-size: 11.5px; color: var(--text-3); cursor: default; padding: 6px; }
+.media-pdf { display: grid; place-items: center; width: 100%; height: 100%; font-weight: 700; color: var(--red-text); background: var(--red-soft); font-size: 15px; gap: 0; }
+.media-pdf small { font-size: 11px; font-weight: 600; color: var(--text-2); }
+.media-viewer { cursor: zoom-out; }
+.media-viewer img { max-width: min(1100px, 100%); max-height: 88vh; border-radius: var(--radius-sm); box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6); }
+.media-close { position: fixed; top: 16px; right: 16px; }
+@media (max-width: 780px) { .media-md { width: 180px; height: 130px; } }

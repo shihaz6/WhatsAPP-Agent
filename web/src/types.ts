@@ -41,6 +41,10 @@ export interface Message {
   agent_error: string | null;
   /** Outgoing: who wrote it. Null for older rows. */
   sent_by: "bot" | "teacher" | null;
+  /** Incoming photo/PDF: media_file is set when the file was saved. body is the caption. */
+  media_id: string | null;
+  media_mime: string | null;
+  media_file: string | null;
 }
 
 export interface ToolRun {
@@ -85,6 +89,9 @@ export interface Payment {
   slip_reference: string | null;
   slip_received_at: string | null;
   review_note: string | null;
+  /** Slips awaiting review: the saved photo/PDF, if any. */
+  slip_file?: string | null;
+  slip_mime?: string | null;
 }
 
 export interface ConversationDetail {
@@ -109,14 +116,18 @@ export interface Session {
   original_date?: string;
 }
 
+export type ClassType = "theory" | "revision" | "paper";
+
 export interface ClassInfo {
   id: number;
+  subject_id: number;
   title: string;
   subject_name: string;
   subject_level: string;
-  class_type: "theory" | "revision" | "paper";
+  class_type: ClassType;
   mode: "online" | "physical";
   location: string | null;
+  day_of_week: number;
   day_name: string;
   start_time: string;
   duration_minutes: number;
@@ -124,7 +135,35 @@ export interface ClassInfo {
   capacity: number | null;
   enrolled_count: number;
   seats_left: number | null;
+  active: 0 | 1;
 }
+
+/** What the class form sends. Numbers may arrive as strings from inputs; the server checks them. */
+export interface ClassInput {
+  title: string;
+  subject_id: number | string;
+  class_type: ClassType;
+  mode: "online" | "physical";
+  location: string;
+  day_of_week: number | string;
+  start_time: string;
+  duration_minutes: number | string;
+  monthly_fee: number | string;
+  capacity: number | string;
+}
+
+export interface Subject { id: number; name: string; level: string }
+export interface SubjectSetting extends Subject { hourly_rate: number | null; class_count: number }
+export interface Slot { id: number; day_of_week: number; day_name: string; start_time: string; end_time: string }
+export interface Faq { id: number; question: string; answer: string }
+export interface TutorProfile {
+  name: string;
+  bio: string | null;
+  qualifications: string | null;
+  payment_instructions: string | null;
+  currency: string;
+}
+export interface SettingsData { tutor: TutorProfile | null; subjects: SubjectSetting[]; availability: Slot[]; faqs: Faq[] }
 
 export interface Tutor { name: string; timezone: string; currency: string }
 
@@ -150,4 +189,4 @@ export interface Overview {
 
 export interface OwedRow { contact_id: number; wa_id: string; name: string | null; total: number; items: number }
 export interface PaymentsData { slips: Payment[]; owed: OwedRow[] }
-export interface ClassesData { classes: ClassInfo[]; sessions: Session[] }
+export interface ClassesData { classes: ClassInfo[]; sessions: Session[]; hidden: ClassInfo[]; subjects: Subject[] }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { ago, displayName, money } from "../format";
 import { href } from "../nav";
+import { MediaThumb } from "../Media";
 import type { Payment } from "../types";
 import { Empty, ErrorNote, PageHead, Skeleton, Stat, useData } from "../ui";
 
@@ -16,7 +17,7 @@ export function Payments({ onAuthError }: { onAuthError: () => void }) {
 
   return (
     <div className="stack-lg">
-      <PageHead title="Payments" sub="Review bank slips and follow up on outstanding fees." />
+      <PageHead title="Payments" sub="Check each slip against the amount, then approve or reject it. Click a slip to see it full size." />
 
       <section className="stats stats-2">
         <Stat label="Slips to review" value={data.slips.length} tone={data.slips.length ? "amber" : "green"} note={money(slipTotal)} />
@@ -70,10 +71,11 @@ function SlipRow({ p, onDone }: { p: Payment; onDone: () => void }) {
   return (
     <li className="slip">
       <div className="slip-main">
+        {p.slip_media_id && <MediaThumb mediaId={p.slip_media_id} mime={p.slip_mime ?? null} saved={Boolean(p.slip_file)} size="sm" />}
         <div className="grow min0">
           <div className="row-title">{p.student_name} <span className="muted">·</span> <span className="num">{money(p.amount)}</span></div>
-          <div className="row-sub">{p.class_title} · {p.month}{p.slip_reference ? ` · Ref ${p.slip_reference}` : ""}</div>
-          <div className="row-sub">Received {ago(p.slip_received_at)} ago</div>
+          <div className="row-sub">{p.class_title} · {p.month}{p.slip_reference ? ` · “${p.slip_reference}”` : ""}</div>
+          <div className="row-sub">Received {ago(p.slip_received_at) === "now" ? "just now" : `${ago(p.slip_received_at)} ago`}</div>
         </div>
         {!rejecting && (
           <div className="slip-actions">

@@ -60,4 +60,23 @@ async function markAsRead(messageId, { typing = false } = {}) {
   }
 }
 
-module.exports = { isConfigured, send, sendText, markAsRead };
+// Download a photo or document someone sent (e.g. a payment slip). WhatsApp gives a media id;
+// the id resolves to a short-lived URL that needs the same token. Returns { buffer, mime }.
+const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+async function downloadMedia(mediaId) {
+  const { token, version } = config();
+  const auth = { Authorization: `Bearer ${token}` };
+  const metaRes = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(mediaId)}`, {
+    headers: auth, signal: AbortSignal.timeout(10_000),
+  });
+  const meta = await metaRes.json().catch(() => ({}));
+  if (!metaRes.ok || !meta.url) throw new Error(`Media lookup ${metaRes.status}: ${meta.error?.message ?? "no url"}`);
+  if (meta.file_size > MAX_MEDIA_BYTES) throw new Error(`File too large (${meta.file_size} bytes)`);
+  const fileRes = await fetch(meta.url, { headers: auth, signal: AbortSignal.timeout(20_000) });
+  if (!fileRes.ok) throw new Error(`Media download ${fileRes.status}`);
+  const buffer = Buffer.from(await fileRes.arrayBuffer());
+  if (buffer.length > MAX_MEDIA_BYTES) throw new Error(`File too large (${buffer.length} bytes)`);
+  return { buffer, mime: meta.mime_type || fileRes.headers.get("content-type") || "application/octet-stream" };
+}
+
+module.exports = { isConfigured, send, sendText, markAsRead, downloadMedia };

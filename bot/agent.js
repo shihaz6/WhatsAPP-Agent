@@ -135,8 +135,9 @@ Rules:
 - The class list is complete. A subject, grade or class that isn't in it is not offered: say so plainly (e.g. "The teacher doesn't teach Geography") and mention what is offered for that level, if anything.
 - Which tool: session dates, cancellations, reschedules ("this Saturday", "next class") -> get_class_schedule or list_classes; bank and payment details -> get_tutor_info (give the bank details it returns; never say "the details you already have"); fee records and what they owe -> get_my_fees; common questions (missed classes, refunds, trials) -> get_faqs; one-to-one -> get_one_to_one_info; their students -> get_my_family; notes and recordings -> get_my_materials.
 - Privacy: only discuss the students linked to this number (listed above). If they ask about anyone else, say you can only share details of students registered under this number. Don't say whether that person exists or not.
-- You can look things up and hand the chat to the teacher with hand_off_to_teacher. Nothing else. You cannot enrol, add or register a student, book trials or one-to-ones, add anyone to a waitlist, check payment slips or photos, or send links or files you don't have. Never offer or promise those ("I'll forward it", "I'll note that", "send me the name to enrol", "if you'd like to add her", "let me know once you've paid"), and never suggest other ways to reach the teacher (email, phone, office) unless a tool gives them.
-- Use hand_off_to_teacher when they ask for the teacher or a person; want to enrol, book a trial or a one-to-one (first get the student's name, grade and class, then hand off); send a photo or document (you can't see it; it may be a payment slip); say they paid but get_my_fees shows no record; complain; or ask something only the teacher can answer. Only after the tool succeeds, tell them the teacher has their message and will reply in this chat. Never claim that otherwise.
+- You can look things up, pass a payment slip to the teacher with record_payment_slip, and hand the chat to the teacher with hand_off_to_teacher. Nothing else. You cannot enrol, add or register a student, book trials or one-to-ones, add anyone to a waitlist, see photos, check whether a slip is right, mark anything as paid, or send links or files you don't have. Never offer or promise those ("I'll forward it", "I'll note that", "send me the name to enrol", "if you'd like to add her", "let me know once you've paid"), and never suggest other ways to reach the teacher (email, phone, office) unless a tool gives them.
+- Payment slips: you can't see photos or PDFs ("[sent a photo]" in the chat), but the teacher can. When they send one that may be a payment slip, or say they've paid, call get_my_fees. If exactly one fee is due or rejected, or their message says which (student, month), call record_payment_slip with those payment_ids. If several are unpaid and it's unclear, list them briefly and ask which ones the slip covers, then record it. After it succeeds, say the teacher will check the slip and confirm. Never say it's paid or approved. If they have no unpaid fees or no students, or the photo isn't a slip, use hand_off_to_teacher.
+- Use hand_off_to_teacher when they ask for the teacher or a person; want to enrol, book a trial or a one-to-one (first get the student's name, grade and class, then hand off); send a photo or document that isn't a slip you can record; complain; or ask something only the teacher can answer. Only after the tool succeeds, tell them the teacher has their message and will reply in this chat. Never claim that otherwise.
 - Never mention a "database", "system", "records" or "tools" to them. Say "the teacher's classes" or just answer.
 ${languageRules(contact.language)}
 - This is WhatsApp: be warm and brief (usually under 80 words). Use *bold* for emphasis, simple line breaks and "-" lists. No tables, headings or markdown links. Write dates like "Tuesday 17 Nov" and times like "4.00 pm", never "2026-11-17".
@@ -218,7 +219,10 @@ function historyMessages(db, contact, incoming, limit, since) {
   }
   return rows.map((r) => ({
     role: r.direction === "in" ? "user" : "assistant",
-    content: r.body || PLACEHOLDER[r.type] || `[sent a ${r.type} message]`,
+    // A photo with a caption is still a photo: "[sent a photo] Nov fees for Kasun".
+    content: PLACEHOLDER[r.type] && r.direction === "in"
+      ? [PLACEHOLDER[r.type], r.body].filter(Boolean).join(" ")
+      : r.body || PLACEHOLDER[r.type] || `[sent a ${r.type} message]`,
   }));
 }
 
@@ -271,7 +275,8 @@ function createAgent({ db, llm, log = console, maxRounds = 6, historyLimit = 16,
         // One chance to fix made-up amounts or classes, or offers it can't keep, before sending.
         const sources = [catalog, ...messages.filter((m) => m.role === "tool").map((m) => m.content)].join("\n");
         const madeUp = unsupportedFacts(text, sources, classTitles);
-        const promises = falsePromises(text, { handedOff: toolLog.some((t) => t.name === "hand_off_to_teacher" && t.ok) });
+        // "I've sent your slip to the teacher" is true after either tool.
+        const promises = falsePromises(text, { handedOff: toolLog.some((t) => ["hand_off_to_teacher", "record_payment_slip"].includes(t.name) && t.ok) });
         const privacy = aboutSomeoneElse(text, { hasStudents: hasStudents() });
         if ((madeUp.length || promises.length || privacy.length) && !rechecked && round < maxRounds - 1) {
           rechecked = true;

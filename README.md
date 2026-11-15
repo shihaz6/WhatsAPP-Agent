@@ -31,7 +31,7 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
     - [x] Language: replies mirror the language *and script* of the latest message: English, Sinhala, Tamil, Singlish or Tanglish (`bot/language.js`). The detected language is saved on the contact, so "ok"/"thanks" keep it, and the fallback message is sent in it. `npm run admin -- lang <wa_id> <language>` sets it by hand.
     - [ ] Interactive replies (buttons, lists)
   - [ ] 4. Write tools with confirmation: trials, enrolment, one-to-one bookings, "which child?"
-  - [ ] 5. Payment slip images
+  - [x] 5. Payment slips: photos and PDFs are downloaded as soon as they arrive (paused chats too) into `data/media/` (`MEDIA_DIR`). The bot links the newest slip to that family's unpaid fees with `record_payment_slip`, asks which fees it covers when that's unclear, and never says a fee is paid. The teacher sees the slip in the chat and on **Payments** (full size on click) and approves or rejects it. Slips aren't read automatically (no vision model).
   - [ ] 6. Talk to the teacher (handoff), memory notes, test conversations
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host

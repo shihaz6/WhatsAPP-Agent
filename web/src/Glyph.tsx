@@ -1,6 +1,6 @@
 // Simple line icons (inline SVG, 24px grid, 1.6px stroke).
 
-export type GlyphName = "grid" | "chat" | "calendar" | "wallet" | "bot" | "globe" | "list" | "logout";
+export type GlyphName = "grid" | "chat" | "calendar" | "wallet" | "bot" | "globe" | "list" | "logout" | "settings" | "plus";
 
 const PATHS: Record<GlyphName, JSX.Element> = {
   grid: (<><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" />
@@ -12,6 +12,8 @@ const PATHS: Record<GlyphName, JSX.Element> = {
   globe: (<><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5z" /></>),
   list: <path d="M8.5 7h11M8.5 12h11M8.5 17h11M4.5 7h.01M4.5 12h.01M4.5 17h.01" />,
   logout: <path d="M14 4.5h3.5A1.5 1.5 0 0 1 19 6v12a1.5 1.5 0 0 1-1.5 1.5H14M10 16l-4-4 4-4M6 12h9" />,
+  settings: (<><path d="M5 7h9M18 7h1M5 17h1M10 17h9" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /><path d="M5 12h3M12 12h7" /><circle cx="10" cy="12" r="2" /></>),
+  plus: <path d="M12 5v14M5 12h14" />,
 };
 
 export function Glyph({ name, size = 18, className }: { name: GlyphName; size?: number; className?: string }) {

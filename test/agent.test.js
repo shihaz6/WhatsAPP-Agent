@@ -524,3 +524,26 @@ describe("language detection (phone test, 15 Nov)", () => {
     test(`"${text}" -> ${expected}`, () => assert.equal(detectLanguage(text), expected));
   }
 });
+
+describe("payment slips in the conversation", () => {
+  test("photo -> get_my_fees -> record_payment_slip -> 'the teacher will check it' is sent as is", async () => {
+    const id = "wamid.slip.agent";
+    db.logMessage({ id, waId: FERNANDO, direction: "in", type: "image", body: "Nov fees", mediaId: "media-agent", mediaMime: "image/jpeg" });
+    const fee = db.listPaymentsForContact(contact(FERNANDO).id).find((p) => p.status === "due");
+    const reply = "Thanks! I've passed your slip to the teacher. They'll check it and confirm.";
+    const llm = scriptedLLM([{ tools: [["get_my_fees", {}]] }, { tools: [["record_payment_slip", { payment_ids: [fee.id] }]] }, reply]);
+    const r = await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: { id, from: FERNANDO, type: "image", text: "Nov fees" } });
+    assert.equal(r.replies[0].body, reply, "no fact-check retry: the tool really ran");
+    assert.deepEqual(r.toolLog.map((t) => [t.name, t.ok]), [["get_my_fees", true], ["record_payment_slip", true]]);
+    assert.equal(db.getPayment(fee.id).status, "slip_received");
+    assert.equal(llm.requests[0].messages.at(-2).content, "[sent a photo] Nov fees", "the model knows it's a photo with a caption");
+  });
+
+  test("the prompt explains slips: record them, never say paid, hand off what can't be matched", () => {
+    const p = systemPrompt({ tutor: db.getTutor(), contact: contact(FERNANDO), students: [], now: NOW, db });
+    assert.match(p, /call record_payment_slip/);
+    assert.match(p, /Never say it's paid or approved/);
+    assert.match(p, /photo isn't a slip, use hand_off_to_teacher/);
+    assert.doesNotMatch(p, /check payment slips or photos/);
+  });
+});

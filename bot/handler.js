@@ -4,18 +4,22 @@
 // db, whatsapp and agent are passed in so tests can run it without a network.
 
 const crypto = require("node:crypto");
+const { saveMedia } = require("./media");
 
-// Reduce a raw webhook message to what the agent needs.
+// Reduce a raw webhook message to what the agent needs. Photos and documents keep their media
+// id (to download the file) and caption (as the text).
 function normalize(msg) {
+  const media = msg.type === "image" || msg.type === "document" ? msg[msg.type] : null;
   return {
     id: msg.id,
     from: msg.from,
     type: msg.type,
-    text: msg.type === "text" ? (msg.text?.body ?? "") : null,
+    text: msg.type === "text" ? (msg.text?.body ?? "") : (media?.caption ?? null),
+    media: media?.id ? { id: media.id, mime: media.mime_type ?? null } : null,
   };
 }
 
-function createHandler({ db, whatsapp, agent, log = console }) {
+function createHandler({ db, whatsapp, agent, log = console, mediaDir }) {
   // Messages from one person are handled one at a time, in arrival order, so the agent
   // always sees the previous reply in the history before answering the next message.
   const queues = new Map();
@@ -38,8 +42,18 @@ function createHandler({ db, whatsapp, agent, log = console }) {
     const incoming = normalize(msg);
 
     // The WhatsApp message id is the primary key, so a redelivery is refused here.
-    if (!db.logMessage({ id: incoming.id, waId: incoming.from, direction: "in", type: incoming.type, body: incoming.text })) {
+    if (!db.logMessage({ id: incoming.id, waId: incoming.from, direction: "in", type: incoming.type, body: incoming.text,
+      mediaId: incoming.media?.id, mediaMime: incoming.media?.mime })) {
       return { status: "duplicate" };
+    }
+
+    // Keep the file before anything else, even for a paused chat: the teacher needs to see slips.
+    if (incoming.media && whatsapp.isConfigured() && whatsapp.downloadMedia) {
+      try {
+        await saveMedia({ db, whatsapp, messageId: incoming.id, mediaId: incoming.media.id, mime: incoming.media.mime, ...(mediaDir ? { dir: mediaDir } : {}) });
+      } catch (err) {
+        log.error(`Could not save media from ${incoming.from}:`, err.message);
+      }
     }
 
     const contact = db.ensureContact(incoming.from);

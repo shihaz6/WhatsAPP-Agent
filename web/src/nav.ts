@@ -1,7 +1,7 @@
 // Hash routing: #/conversations/94771234567 -> { view: "conversations", arg: "94771234567" }.
 
-export type View = "overview" | "conversations" | "classes" | "payments";
-export const VIEWS: View[] = ["overview", "conversations", "classes", "payments"];
+export type View = "overview" | "conversations" | "classes" | "payments" | "settings";
+export const VIEWS: View[] = ["overview", "conversations", "classes", "payments", "settings"];
 
 export function readHash(): { view: View; arg?: string } {
   const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");

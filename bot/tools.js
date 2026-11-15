@@ -23,7 +23,7 @@ function createTools({ db, contact, now = new Date() }) {
       description:
         "Pass this chat to the teacher (a human). Use it when they ask for the teacher or a person; want to enrol, " +
         "book a trial or a one-to-one (ask the student's name, grade and class first); send a photo or document " +
-        "(it may be a payment slip, which you can't see); say they paid but get_my_fees shows no record; complain; " +
+        "that isn't a payment slip, or a slip you can't match to their unpaid fees; complain; " +
         "or ask something the other tools can't answer but the teacher could. The bot then goes quiet in this chat " +
         "and the teacher replies here.",
       parameters: {
@@ -136,7 +136,7 @@ function createTools({ db, contact, now = new Date() }) {
     },
 
     get_my_fees: {
-      description: "Monthly fee records for THIS contact's students: amount, month, status (due / slip_received = slip sent, waiting for the tutor to check / approved / rejected / waived), rejection reasons, and the total still owed.",
+      description: "Monthly fee records for THIS contact's students: payment_id, amount, month, status (due / slip_received = slip sent, waiting for the tutor to check / approved / rejected / waived), rejection reasons, and the total still owed.",
       parameters: {},
       run: () => {
         const payments = db.listPaymentsForContact(contact.id);
@@ -144,9 +144,48 @@ function createTools({ db, contact, now = new Date() }) {
         return {
           total_owed: money(db.amountDueForContact(contact.id)),
           payments: payments.map((p) => ({
-            student: p.student_name, class: p.class_title, month: p.month, amount: money(p.amount), status: p.status,
+            payment_id: p.id, student: p.student_name, class: p.class_title, month: p.month, amount: money(p.amount), status: p.status,
             ...(p.status === "rejected" ? { rejection_reason: p.review_note } : {}),
           })),
+        };
+      },
+    },
+
+    record_payment_slip: {
+      description:
+        "Link the payment slip (photo or PDF) they just sent in this chat to their unpaid fees, so the teacher can " +
+        "check it. Use payment_ids from get_my_fees with status due or rejected. If it's unclear which fees the slip " +
+        "covers, ask first. You can't see the slip; the teacher checks it and approves or rejects it.",
+      parameters: {
+        payment_ids: {
+          type: "array", items: { type: "integer" },
+          description: "The fees this slip pays for (one transfer can cover several months or children).",
+        },
+      },
+      run: ({ payment_ids }) => {
+        const ids = Array.isArray(payment_ids) ? [...new Set(payment_ids.map(Number))] : [];
+        if (!ids.length || ids.some((id) => !Number.isInteger(id))) return { error: "payment_ids must list the fees from get_my_fees." };
+        // Only a slip from this chat, sent recently: an old photo is probably not this payment.
+        const since = new Date(now.getTime() - 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+        const slip = db.latestIncomingMedia(contact.wa_id, since);
+        if (!slip) return { error: "No photo or PDF from this chat in the last 24 hours. Ask them to send the slip here." };
+        // Scoped to this contact: another family's payment ids are refused whatever the model asks.
+        const mine = new Map(db.listPaymentsForContact(contact.id).map((p) => [p.id, p]));
+        const notMine = ids.filter((id) => !mine.has(id));
+        if (notMine.length) return { error: `Payment ${notMine.join(", ")} is not one of this contact's fees. Use get_my_fees.` };
+        const done = ids.filter((id) => !["due", "rejected"].includes(mine.get(id).status));
+        if (done.length) {
+          return { error: `Payment ${done.join(", ")} is not waiting for a slip (status: ${done.map((id) => mine.get(id).status).join(", ")}).` };
+        }
+        const r = db.submitSlip(ids, { mediaId: slip.media_id, reference: slip.body ? slip.body.slice(0, 120) : null });
+        if (!r.ok) return { error: `Couldn't record the slip (${r.reason}).` };
+        const recorded = ids.map((id) => mine.get(id));
+        return {
+          ok: true,
+          recorded: recorded.map((p) => ({ student: p.student_name, class: p.class_title, month: p.month, amount: money(p.amount) })),
+          total: money(recorded.reduce((sum, p) => sum + p.amount, 0)),
+          note: "The slip is now waiting for the teacher to check. Tell them that; don't say it's paid or approved. " +
+            "The teacher approves or rejects it, and they can ask about it here later.",
         };
       },
     },

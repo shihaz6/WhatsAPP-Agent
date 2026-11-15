@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { detectLanguage } = require("../bot/language");
+const { mediaPath, mediaDir: defaultMediaDir } = require("../bot/media");
 
 const DIST = path.join(__dirname, "..", "web", "dist");
 const MAX_JSON = 64 * 1024;
@@ -45,7 +46,7 @@ function readJson(req) {
   });
 }
 
-function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = () => new Date(), log = console }) {
+function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = () => new Date(), log = console, mediaDir = defaultMediaDir() }) {
   const tutorName = () => db.getTutor()?.name ?? "Tutor";
 
   function conversation(waId) {
@@ -115,8 +116,37 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
     }],
     ["GET", /^\/classes$/, () => {
       const classes = db.listClasses();
-      return [200, { classes, sessions: db.upcomingSessions(classes.map((c) => c.id), { days: 14, now: clock() }) }];
+      return [200, {
+        classes,
+        sessions: db.upcomingSessions(classes.map((c) => c.id), { days: 14, now: clock() }),
+        hidden: db.listAllClasses().filter((c) => !c.active),
+        subjects: db.listSubjects(),
+      }];
     }],
+    // Classes: what the bot offers. Changes reach the bot on the next message (no restart).
+    ["POST", /^\/classes$/, (_, body) => [200, db.saveClass(null, body, { now: clock() })]],
+    ["POST", /^\/classes\/(\d+)$/, ([id], body) => [200, db.saveClass(Number(id), body, { now: clock() })]],
+    ["POST", /^\/classes\/(\d+)\/active$/, ([id], body) => [200, db.setClassActive(Number(id), Boolean(body.active))]],
+    ["POST", /^\/classes\/(\d+)\/sessions$/, ([id], body) => [200, db.setClassException(Number(id), body, { now: clock() })]],
+    ["POST", /^\/classes\/(\d+)\/sessions\/(\d{4}-\d{2}-\d{2})\/restore$/, ([id, date]) =>
+      [200, { ok: db.deleteClassException(Number(id), date) }]],
+
+    // Settings: the teacher's details, subjects and one-to-one, FAQs.
+    ["GET", /^\/settings$/, () => [200, {
+      tutor: db.getTutor(),
+      subjects: db.listSubjectsForSettings(),
+      availability: db.listAvailability(),
+      faqs: db.listFaqs().map(({ id, question, answer }) => ({ id, question, answer })),
+    }]],
+    ["POST", /^\/settings\/tutor$/, (_, body) => [200, db.saveTutor(body)]],
+    ["POST", /^\/subjects$/, (_, body) => [200, db.saveSubject(null, body)]],
+    ["POST", /^\/subjects\/(\d+)$/, ([id], body) => [200, db.saveSubject(Number(id), body)]],
+    ["POST", /^\/subjects\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteSubject(Number(id)) }]],
+    ["POST", /^\/availability$/, (_, body) => [200, db.addAvailability(body)]],
+    ["POST", /^\/availability\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteAvailability(Number(id)) }]],
+    ["POST", /^\/faqs$/, (_, body) => [200, db.saveFaq(null, body)]],
+    ["POST", /^\/faqs\/(\d+)$/, ([id], body) => [200, db.saveFaq(Number(id), body)]],
+    ["POST", /^\/faqs\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteFaq(Number(id)) }]],
     ["GET", /^\/payments$/, () => [200, { slips: db.listSlipsAwaitingReview(), owed: db.listOwedByContact() }]],
     ["POST", /^\/payments\/(\d+)\/approve$/, ([id]) => reviewed(db.approvePayment(Number(id), tutorName()))],
     ["POST", /^\/payments\/(\d+)\/reject$/, ([id], body) => {
@@ -149,6 +179,10 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
       if (!auth.startsWith("Bearer ") || !safeEqual(auth.slice(7), token)) return sendJson(res, 401, { error: "Wrong or missing access key" });
     }
 
+    // A photo or PDF someone sent (payment slips). Behind the same access check as everything else.
+    const media = subpath.match(/^\/media\/([A-Za-z0-9_.-]{1,200})$/);
+    if (media && req.method === "GET") return serveMedia(res, media[1]);
+
     for (const [method, pattern, handler] of routes) {
       const m = subpath.match(pattern);
       if (!m) continue;
@@ -164,6 +198,20 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
       }
     }
     return sendJson(res, 404, { error: "Unknown endpoint" });
+  }
+
+  function serveMedia(res, mediaId) {
+    const m = db.getMedia(mediaId);
+    const file = m?.media_file ? mediaPath(m.media_file, mediaDir) : null;
+    if (!file) return sendJson(res, 404, { error: "This file wasn't saved (or was sent before slips were kept)." });
+    res.writeHead(200, {
+      "Content-Type": m.media_mime || "application/octet-stream",
+      "Content-Disposition": "inline",
+      "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+    });
+    fs.createReadStream(file).pipe(res);
   }
 
   function serveStatic(req, res, subpath) {

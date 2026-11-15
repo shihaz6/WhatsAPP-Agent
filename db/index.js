@@ -58,6 +58,9 @@ const MESSAGE_COLUMNS = {
   tools: "TEXT",
   agent_error: "TEXT",
   sent_by: "TEXT CHECK (sent_by IN ('bot', 'teacher'))",
+  media_id: "TEXT",
+  media_mime: "TEXT",
+  media_file: "TEXT",
 };
 function addColumns(conn, table, columns) {
   const have = new Set(conn.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
@@ -464,8 +467,29 @@ function submitSlip(paymentIds, { mediaId, reference } = {}) {
   });
 }
 
+// slip_file: the stored photo/PDF of the slip, if it was saved (demo data has none).
 function listSlipsAwaitingReview() {
-  return q(`${PAYMENT_SELECT} WHERE p.status = 'slip_received' ORDER BY p.slip_received_at`).all().map(plain);
+  return q(`SELECT x.*, (SELECT m.media_file FROM messages m WHERE m.media_id = x.slip_media_id AND m.media_file IS NOT NULL LIMIT 1) AS slip_file,
+                   (SELECT m.media_mime FROM messages m WHERE m.media_id = x.slip_media_id LIMIT 1) AS slip_mime
+            FROM (${PAYMENT_SELECT} WHERE p.status = 'slip_received') x ORDER BY x.slip_received_at`).all().map(plain);
+}
+
+// ---------- Media (slips and other photos people send) ----------
+
+function setMessageMedia(messageId, { file, mime }) {
+  return q("UPDATE messages SET media_file = ?, media_mime = ? WHERE id = ?").run(file, mime, messageId).changes > 0;
+}
+
+// The stored file for a WhatsApp media id (for the dashboard).
+function getMedia(mediaId) {
+  return plain(q("SELECT id AS message_id, wa_id, media_id, media_mime, media_file FROM messages WHERE media_id = ? LIMIT 1").get(mediaId));
+}
+
+// The newest photo/PDF this number sent since `sinceIso` (the slip the bot links to fees).
+function latestIncomingMedia(waId, sinceIso) {
+  return plain(q(`SELECT id, media_id, media_mime, media_file, body, created_at FROM messages
+                  WHERE wa_id = ? AND direction = 'in' AND media_id IS NOT NULL AND created_at >= ?
+                  ORDER BY rowid DESC LIMIT 1`).get(waId, sinceIso));
 }
 
 function review(paymentId, status, reviewer, note) {
@@ -535,7 +559,7 @@ function listFaqs() {
 
 // Recent messages with one WhatsApp number, oldest first (for the agent's chat history).
 function recentMessages(waId, limit = 16) {
-  return q(`SELECT id, direction, type, body, created_at, status, error, tools, agent_error, sent_by FROM messages WHERE wa_id = ?
+  return q(`SELECT id, direction, type, body, created_at, status, error, tools, agent_error, sent_by, media_id, media_mime, media_file FROM messages WHERE wa_id = ?
             ORDER BY rowid DESC LIMIT ?`).all(waId, limit).map(plain).reverse();
 }
 
@@ -564,12 +588,183 @@ function setConversation(contactId, state, context = {}) {
 
 // Returns false if this message id was already logged (a webhook retry).
 // status/error/tools/agentError/sentBy are for outgoing replies; see the messages table in schema.sql.
-function logMessage({ id, waId, direction, type, body, status = null, error = null, tools = null, agentError = null, sentBy = null }) {
-  return q(`INSERT INTO messages (id, wa_id, direction, type, body, status, error, tools, agent_error, sent_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
-    .run(id, waId, direction, type, body ?? null, status, error, tools?.length ? JSON.stringify(tools) : null, agentError, sentBy)
+function logMessage({ id, waId, direction, type, body, status = null, error = null, tools = null, agentError = null, sentBy = null, mediaId = null, mediaMime = null }) {
+  return q(`INSERT INTO messages (id, wa_id, direction, type, body, status, error, tools, agent_error, sent_by, media_id, media_mime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
+    .run(id, waId, direction, type, body ?? null, status, error, tools?.length ? JSON.stringify(tools) : null, agentError, sentBy, mediaId, mediaMime)
     .changes > 0;
 }
+
+// ---------- Settings (edited from the dashboard) ----------
+// Everything the bot tells parents comes from these tables, so the teacher must be able to keep
+// them right. Bad input throws an Error with status 400 and a message meant for the teacher.
+
+function invalid(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+const isTime = (s) => typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+const text = (v) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
+const optionalText = (v) => text(v) || null;
+function wholeNumber(v, label, { min = 0, optional = false } = {}) {
+  if (optional && (v === null || v === undefined || v === "")) return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min) throw invalid(`${label} must be a whole number${min > 0 ? ` of at least ${min}` : ""}.`);
+  return n;
+}
+
+// Teacher profile and payment details. Creates the row the first time.
+function saveTutor(fields) {
+  const name = text(fields.name);
+  if (!name) throw invalid("The teacher's name is required.");
+  const values = [name, optionalText(fields.bio), optionalText(fields.qualifications), optionalText(fields.payment_instructions)];
+  q(`INSERT INTO tutor (id, name, bio, qualifications, payment_instructions) VALUES (1, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, bio = excluded.bio,
+       qualifications = excluded.qualifications, payment_instructions = excluded.payment_instructions`).run(...values);
+  return getTutor();
+}
+
+// Subjects, with the one-to-one rate (null = no one-to-one for it) and how many classes use it.
+function listSubjectsForSettings() {
+  return q(`SELECT s.*, r.hourly_rate,
+              (SELECT COUNT(*) FROM classes c WHERE c.subject_id = s.id) AS class_count
+            FROM subjects s LEFT JOIN individual_rates r ON r.subject_id = s.id
+            ORDER BY s.level, s.name`).all().map(plain);
+}
+
+function saveSubject(id, fields) {
+  const name = text(fields.name);
+  const level = text(fields.level);
+  if (!name || !level) throw invalid("A subject needs a name and a level (e.g. Mathematics, O/L).");
+  const rate = wholeNumber(fields.hourly_rate, "The one-to-one rate", { optional: true });
+  return transaction(() => {
+    const clash = q("SELECT id FROM subjects WHERE name = ? AND level = ?").get(name, level);
+    if (clash && clash.id !== id) throw invalid(`${name} (${level}) already exists.`);
+    if (id == null) {
+      id = Number(q("INSERT INTO subjects (name, level) VALUES (?, ?)").run(name, level).lastInsertRowid);
+    } else if (!q("UPDATE subjects SET name = ?, level = ? WHERE id = ?").run(name, level, id).changes) {
+      throw invalid("That subject no longer exists.");
+    }
+    if (rate == null) q("DELETE FROM individual_rates WHERE subject_id = ?").run(id);
+    else q(`INSERT INTO individual_rates (subject_id, hourly_rate) VALUES (?, ?)
+            ON CONFLICT(subject_id) DO UPDATE SET hourly_rate = excluded.hourly_rate`).run(id, rate);
+    return listSubjectsForSettings().find((s) => s.id === id);
+  });
+}
+
+// Only a subject no class uses (even a hidden one) can be deleted.
+function deleteSubject(id) {
+  if (q("SELECT 1 FROM classes WHERE subject_id = ?").get(id)) {
+    throw invalid("Classes use this subject. Move or hide those classes first.");
+  }
+  return transaction(() => {
+    q("DELETE FROM individual_rates WHERE subject_id = ?").run(id);
+    return q("DELETE FROM subjects WHERE id = ?").run(id).changes > 0;
+  });
+}
+
+function addAvailability(fields) {
+  const day = wholeNumber(fields.day_of_week, "Day", { min: 1 });
+  if (day > 7) throw invalid("Day must be 1 (Monday) to 7 (Sunday).");
+  if (!isTime(fields.start_time) || !isTime(fields.end_time)) throw invalid("Times must look like 16:00.");
+  if (fields.end_time <= fields.start_time) throw invalid("The slot must end after it starts.");
+  const id = q("INSERT INTO availability (day_of_week, start_time, end_time) VALUES (?, ?, ?)")
+    .run(day, fields.start_time, fields.end_time).lastInsertRowid;
+  return listAvailability().find((a) => a.id === Number(id));
+}
+
+const deleteAvailability = (id) => q("DELETE FROM availability WHERE id = ?").run(id).changes > 0;
+
+// Every class, hidden ones too (the bot and the Classes page only see active ones).
+function listAllClasses() {
+  return q(`${CLASS_SELECT} ORDER BY c.active DESC, c.day_of_week, c.start_time`).all().map(withSeats);
+}
+
+function classFields(fields) {
+  const title = text(fields.title);
+  if (!title) throw invalid("The class needs a title.");
+  const subjectId = wholeNumber(fields.subject_id, "Subject", { min: 1 });
+  if (!q("SELECT 1 FROM subjects WHERE id = ?").get(subjectId)) throw invalid("Choose a subject.");
+  if (!["theory", "revision", "paper"].includes(fields.class_type)) throw invalid("Choose a class type.");
+  if (!["online", "physical"].includes(fields.mode)) throw invalid("Choose online or in person.");
+  const location = optionalText(fields.location);
+  if (fields.mode === "physical" && !location) throw invalid("An in-person class needs a venue.");
+  const day = wholeNumber(fields.day_of_week, "Day", { min: 1 });
+  if (day > 7) throw invalid("Day must be Monday to Sunday.");
+  if (!isTime(fields.start_time)) throw invalid("Start time must look like 16:00.");
+  return {
+    subject_id: subjectId, title, class_type: fields.class_type, mode: fields.mode, location,
+    day_of_week: day, start_time: fields.start_time,
+    duration_minutes: wholeNumber(fields.duration_minutes, "Duration", { min: 1 }),
+    monthly_fee: wholeNumber(fields.monthly_fee, "The monthly fee"),
+    capacity: wholeNumber(fields.capacity, "Seats", { min: 1, optional: true }),
+  };
+}
+
+function saveClass(id, fields, { now = new Date() } = {}) {
+  const c = classFields(fields);
+  const cols = Object.keys(c);
+  if (id == null) {
+    id = Number(q(`INSERT INTO classes (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)
+      .run(...Object.values(c)).lastInsertRowid);
+  } else {
+    const before = getClass(id);
+    if (!before) throw invalid("That class no longer exists.");
+    // Cancellations are stored against the weekly date; a new weekday would orphan them.
+    if (before.day_of_week !== c.day_of_week && q("SELECT 1 FROM class_exceptions WHERE class_id = ? AND date >= ?").get(id, tutorNow(now).date)) {
+      throw invalid("This class has upcoming cancellations or moved sessions. Undo them before changing its day.");
+    }
+    q(`UPDATE classes SET ${cols.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(c), id);
+  }
+  return getClass(id);
+}
+
+// Hidden classes keep their students and payments; the bot stops offering them.
+function setClassActive(id, active) {
+  if (!q("UPDATE classes SET active = ? WHERE id = ?").run(active ? 1 : 0, id).changes) throw invalid("That class no longer exists.");
+  return getClass(id);
+}
+
+// Cancel or move one session. `date` is the class's normal weekly date for that session.
+function setClassException(classId, fields, { now = new Date() } = {}) {
+  const cls = getClass(classId);
+  if (!cls) throw invalid("That class no longer exists.");
+  const { date } = fields;
+  if (!isDate(date)) throw invalid("Choose a date.");
+  if (isoDayOfWeek(date) !== cls.day_of_week) throw invalid(`${cls.title} runs on ${cls.day_name}s; pick one of those dates.`);
+  const today = tutorNow(now).date;
+  if (date < today) throw invalid("That session is in the past.");
+  const status = fields.status;
+  if (!["cancelled", "rescheduled"].includes(status)) throw invalid("Choose cancel or move.");
+  let newDate = null, newTime = null;
+  if (status === "rescheduled") {
+    newDate = optionalText(fields.new_date);
+    newTime = optionalText(fields.new_time);
+    if (newDate && !isDate(newDate)) throw invalid("The new date isn't valid.");
+    if (newTime && !isTime(newTime)) throw invalid("The new time must look like 16:00.");
+    if (!newDate && !newTime) throw invalid("Give a new date, a new time, or both.");
+    if (newDate && newDate < today) throw invalid("The new date is in the past.");
+  }
+  q(`INSERT INTO class_exceptions (class_id, date, status, new_date, new_time, note) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(class_id, date) DO UPDATE SET status = excluded.status, new_date = excluded.new_date,
+       new_time = excluded.new_time, note = excluded.note`)
+    .run(classId, date, status, newDate, newTime, optionalText(fields.note));
+  return plain(q("SELECT * FROM class_exceptions WHERE class_id = ? AND date = ?").get(classId, date));
+}
+
+const deleteClassException = (classId, date) =>
+  q("DELETE FROM class_exceptions WHERE class_id = ? AND date = ?").run(classId, date).changes > 0;
+
+// The bot reads every FAQ, so keywords aren't needed for new ones (kept for old rows).
+function saveFaq(id, fields) {
+  const question = text(fields.question);
+  const answer = text(fields.answer);
+  if (!question || !answer) throw invalid("An FAQ needs a question and an answer.");
+  if (id == null) id = Number(q("INSERT INTO faqs (question, answer, keywords) VALUES (?, ?, '')").run(question, answer).lastInsertRowid);
+  else if (!q("UPDATE faqs SET question = ?, answer = ? WHERE id = ?").run(question, answer, id).changes) throw invalid("That FAQ no longer exists.");
+  return plain(q("SELECT * FROM faqs WHERE id = ?").get(id));
+}
+
+const deleteFaq = (id) => q("DELETE FROM faqs WHERE id = ?").run(id).changes > 0;
 
 // ---------- Dashboard (AlchemyX Catalyst) ----------
 
@@ -623,8 +818,11 @@ module.exports = {
   bookTrial, getTrial, listTrials, setTrialStatus,
   getPayment, listPayments, listPaymentsForContact, amountDue, amountDueForContact, generateMonthlyFees,
   submitSlip, listSlipsAwaitingReview, approvePayment, rejectPayment, waivePayment,
+  setMessageMedia, getMedia, latestIncomingMedia,
   createBooking, getBooking, listBookings, setBookingStatus,
   listMaterials, listFaqs, findFaqs,
   getConversation, setConversation, logMessage, recentMessages,
   listConversations, listOwedByContact, dashboardCounts,
+  saveTutor, listSubjectsForSettings, saveSubject, deleteSubject, addAvailability, deleteAvailability,
+  listAllClasses, saveClass, setClassActive, setClassException, deleteClassException, saveFaq, deleteFaq,
 };

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Glyph } from "../Glyph";
+import { MediaThumb } from "../Media";
 import { LANGUAGE_INFO, ago, clock, dayLabel, displayName, messageText, money } from "../format";
 import { go, href } from "../nav";
 import { LANGUAGES, type ConversationDetail, type ConversationSummary, type Language, type Message, type ToolRun } from "../types";
@@ -175,7 +176,8 @@ function Messages({ messages }: { messages: Message[] }) {
           <div key={m.id} className="msg-wrap">
             {divider && <div className="day-divider"><span>{day}</span></div>}
             <div className={`msg msg-${m.direction} ${m.sent_by === "teacher" ? "msg-teacher" : ""} ${m.body ? "" : "msg-media"} ${undelivered(m) ? "msg-undelivered" : ""}`}>
-              <div className="msg-body">{formatWhatsApp(messageText(m.type, m.body))}</div>
+              {m.media_id && <MediaThumb mediaId={m.media_id} mime={m.media_mime} saved={Boolean(m.media_file)} />}
+              {(m.body || !m.media_id) && <div className="msg-body">{formatWhatsApp(messageText(m.type, m.body))}</div>}
               <div className="msg-meta num">
                 {m.sent_by === "bot" && <span className="msg-who msg-who-bot">AI</span>}
                 {m.sent_by === "teacher" && <span className="msg-who msg-who-teacher">Teacher</span>}
