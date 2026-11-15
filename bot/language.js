@@ -29,6 +29,7 @@ const SINGLISH = new Set(`
   ow owu ov ehenam ehema mehema wage nisa passe kalin wela welawa welawata
   duwa putha daruwa lamaya lamai lamayata panthiya panthi pantiya
   ayyo aiyo machan malli nangi akka ayya sir-ge
+  monaada monada yanne yanneda kawuda kauda godak tikak
 `.split(/\s+/).filter(Boolean));
 
 const TANGLISH = new Set(`
@@ -47,6 +48,8 @@ const TANGLISH = new Set(`
   venumna venumnaa kelunga kelikonga ketkalaam kekkalam solunga sollunga theriyanum theriyanumna pathi
   inga anga edhavadhu ethavathu irundha irundhaa
   aagum agum aaguma aachu achu aayiduchu mudiyuma mudiyum mudiyala
+  evalo thaane thane adhu athu azu idhu ithu ethuna ethana innam innum seiya seyya elumaa eluma
+  edupangala edupangalaa edupeengala edupeengalaa kudupeengala kudunga
 `.split(/\s+/).filter(Boolean));
 
 // Short English words that don't occur as romanized Sinhala/Tamil words.
@@ -56,6 +59,8 @@ const ENGLISH = new Set(`
   i you he she we they it me him her them and but or if for from with about into
   time fees fee class classes when's what's i'm i'd you're it's don't can't
   hello hi thanks thank morning evening tomorrow today next week month
+  want need talk teacher enroll enrol join child son daughter much owe get got payment paid pay show all any
+  weather know tell send give book trial price cost many seats left still not yet
 `.split(/\s+/).filter(Boolean));
 
 // English tutoring words that get a Sinhala/Tamil ending glued on: "classeka", "Saturdayta",

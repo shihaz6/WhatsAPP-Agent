@@ -9,6 +9,8 @@ export interface Contact {
   name: string | null;
   kind: "parent" | "student" | null;
   language: Language;
+  /** 1 = follows what they write (detected); 0 = fixed by the teacher. */
+  language_auto: 0 | 1;
   bot_paused: 0 | 1;
   paused_reason: string | null;
   paused_at: string | null;

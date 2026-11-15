@@ -7,6 +7,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { detectLanguage } = require("../bot/language");
 
 const DIST = path.join(__dirname, "..", "web", "dist");
 const MAX_JSON = 64 * 1024;
@@ -87,9 +88,14 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
     ["POST", /^\/conversations\/(\d+)\/pause$/, ([waId], body) => withContact(waId, (c) =>
       db.setBotPaused(c.id, true, String(body.reason ?? "").trim() || "Paused from Catalyst"))],
     ["POST", /^\/conversations\/(\d+)\/resume$/, ([waId]) => withContact(waId, (c) => db.setBotPaused(c.id, false))],
+    // "auto" (the default): the language follows what they write. A language code fixes it, so
+    // the bot stops changing it from their messages.
     ["POST", /^\/conversations\/(\d+)\/language$/, ([waId], body) => {
-      if (!db.LANGUAGES.includes(body.language)) return [400, { error: `language must be one of ${db.LANGUAGES.join(", ")}` }];
-      return withContact(waId, (c) => db.updateContact(c.id, { language: body.language }));
+      if (body.language === "auto") {
+        return withContact(waId, (c) => db.updateContact(c.id, { language_auto: 1, language: latestLanguage(waId) ?? c.language }));
+      }
+      if (!db.LANGUAGES.includes(body.language)) return [400, { error: `language must be "auto" or one of ${db.LANGUAGES.join(", ")}` }];
+      return withContact(waId, (c) => db.updateContact(c.id, { language: body.language, language_auto: 0 }));
     }],
     ["POST", /^\/conversations\/(\d+)\/reply$/, async ([waId], body) => {
       const text = String(body.text ?? "").trim();
@@ -119,6 +125,15 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
       return reviewed(db.rejectPayment(Number(id), tutorName(), reason));
     }],
   ];
+
+  // The language of their most recent message that shows one (skips "ok", emojis, photos).
+  function latestLanguage(waId) {
+    for (const m of db.recentMessages(waId, 50).reverse()) {
+      const lang = m.direction === "in" ? detectLanguage(m.body) : null;
+      if (lang) return lang;
+    }
+    return null;
+  }
 
   function withContact(waId, fn) {
     const c = db.getContactByWaId(waId);

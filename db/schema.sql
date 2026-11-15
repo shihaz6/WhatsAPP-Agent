@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS contacts (
   kind          TEXT CHECK (kind IN ('parent', 'student')),  -- NULL until known
   -- en | si / ta (Sinhala / Tamil script) | singlish / tanglish (written in English letters)
   language      TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'si', 'ta', 'singlish', 'tanglish')),
+  -- 1 = language follows what they write (detected from each message); 0 = fixed by the teacher.
+  -- Keep in sync with CONTACT_COLUMNS in db/index.js (added to older databases there).
+  language_auto INTEGER NOT NULL DEFAULT 1 CHECK (language_auto IN (0, 1)),
   bot_paused    INTEGER NOT NULL DEFAULT 0 CHECK (bot_paused IN (0, 1)),  -- human handoff
   paused_reason TEXT,
   paused_at     TEXT,

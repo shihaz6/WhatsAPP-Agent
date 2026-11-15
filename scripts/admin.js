@@ -3,7 +3,7 @@
 //   npm run admin -- pause  <wa_id> [reason]   bot stops replying (human handoff)
 //   npm run admin -- resume <wa_id>            bot replies again
 //   npm run admin -- reset  <wa_id>            clear the conversation state
-//   npm run admin -- lang   <wa_id> <language> set the fallback language (en|si|ta|singlish|tanglish)
+//   npm run admin -- lang   <wa_id> <language> auto (follow what they write) or fix it: en|si|ta|singlish|tanglish
 // wa_id is the number as WhatsApp sends it: country code, no "+" or spaces (e.g. 94771234567).
 
 const path = require("node:path");
@@ -56,12 +56,17 @@ switch (cmd) {
     break;
   case "lang": {
     const language = rest[0]?.toLowerCase();
+    if (language === "auto") {
+      db.updateContact(contact.id, { language_auto: 1 });
+      console.log(`Language for ${waId} is automatic again: it follows what they write.`);
+      break;
+    }
     if (!db.LANGUAGES.includes(language)) {
-      console.error(`Language must be one of: ${db.LANGUAGES.join(", ")}`);
+      console.error(`Language must be auto or one of: ${db.LANGUAGES.join(", ")}`);
       process.exit(1);
     }
-    db.updateContact(contact.id, { language });
-    console.log(`Language for ${waId} set to ${language}. (It changes again when they write in another language.)`);
+    db.updateContact(contact.id, { language, language_auto: 0 });
+    console.log(`Language for ${waId} fixed to ${language}. (Use "lang ${waId} auto" to follow what they write again.)`);
     break;
   }
   default:

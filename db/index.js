@@ -44,20 +44,24 @@ const LANGUAGES = ["en", "si", "ta", "singlish", "tanglish"];
 // tables, so a CHECK that grew needs the table rebuilt (SQLite can't alter a CHECK).
 function migrate(conn) {
   migrateContacts(conn);
-  migrateMessages(conn);
+  addColumns(conn, "contacts", CONTACT_COLUMNS);
+  addColumns(conn, "messages", MESSAGE_COLUMNS);
 }
 
-// Delivery and agent details on messages (added after the first databases were made).
+// Columns added after the first databases were made. Keep in sync with schema.sql.
+const CONTACT_COLUMNS = {
+  language_auto: "INTEGER NOT NULL DEFAULT 1 CHECK (language_auto IN (0, 1))",
+};
 const MESSAGE_COLUMNS = {
   status: "TEXT CHECK (status IN ('sent', 'failed', 'not_sent'))",
   error: "TEXT",
   tools: "TEXT",
   agent_error: "TEXT",
 };
-function migrateMessages(conn) {
-  const have = new Set(conn.prepare("PRAGMA table_info(messages)").all().map((c) => c.name));
-  for (const [name, type] of Object.entries(MESSAGE_COLUMNS)) {
-    if (!have.has(name)) conn.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
+function addColumns(conn, table, columns) {
+  const have = new Set(conn.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  for (const [name, type] of Object.entries(columns)) {
+    if (!have.has(name)) conn.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
   }
 }
 
@@ -206,7 +210,7 @@ function ensureContact(waId) {
   return getContactByWaId(waId);
 }
 
-const CONTACT_FIELDS = ["name", "kind", "language"];
+const CONTACT_FIELDS = ["name", "kind", "language", "language_auto"];
 
 function updateContact(contactId, fields = {}) {
   const keys = CONTACT_FIELDS.filter((k) => fields[k] !== undefined);

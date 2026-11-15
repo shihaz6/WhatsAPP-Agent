@@ -68,7 +68,7 @@ export const api = {
   conversation: (waId: string) => request<ConversationDetail>(wa(waId)),
   pause: (waId: string, reason?: string) => request<Contact>(`${wa(waId)}/pause`, { method: "POST", body: { reason } }),
   resume: (waId: string) => request<Contact>(`${wa(waId)}/resume`, { method: "POST", body: {} }),
-  setLanguage: (waId: string, language: Language) =>
+  setLanguage: (waId: string, language: Language | "auto") =>
     request<Contact>(`${wa(waId)}/language`, { method: "POST", body: { language } }),
   reply: (waId: string, text: string) => request<{ ok: true; id: string }>(`${wa(waId)}/reply`, { method: "POST", body: { text } }),
   classes: () => request<ClassesData>("/classes"),

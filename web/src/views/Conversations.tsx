@@ -116,11 +116,17 @@ function Thread({ waId, onAuthError, onChanged }: { waId: string; onAuthError: (
           <div className="row-sub">+{contact.wa_id}{contact.kind ? ` · ${contact.kind}` : ""}</div>
         </div>
         <div className="thread-actions">
-        <label className="lang-select" title="The reply language when a message doesn't show one (e.g. “ok”)">
-          <span className="sr-only">Language</span>
-          <select value={contact.language} disabled={busy !== null}
-            onChange={(e) => act("lang", () => api.setLanguage(waId, e.target.value as Language))}>
-            {LANGUAGES.map((l) => <option key={l} value={l}>{LANGUAGE_INFO[l].label}</option>)}
+        <label className="lang-select"
+          title={contact.language_auto
+            ? "The bot replies in the language they write in. Detected from their messages; choose a language only if it keeps getting it wrong."
+            : "Fixed by you: the bot no longer changes it from their messages. Choose Auto to follow what they write again."}>
+          <span className="sr-only">Bot reply language</span>
+          <select value={contact.language_auto ? "auto" : contact.language} disabled={busy !== null}
+            onChange={(e) => act("lang", () => api.setLanguage(waId, e.target.value as Language | "auto"))}>
+            <option value="auto">Auto · {LANGUAGE_INFO[contact.language].label}</option>
+            <optgroup label="Always use">
+              {LANGUAGES.map((l) => <option key={l} value={l}>{LANGUAGE_INFO[l].label}</option>)}
+            </optgroup>
           </select>
         </label>
         <button className={`btn btn-sm ${contact.bot_paused ? "btn-soft" : "btn-warn"}`} onClick={togglePause} disabled={busy !== null}>
@@ -187,7 +193,14 @@ function Messages({ messages }: { messages: Message[] }) {
 
 const undelivered = (m: Message) => m.status === "failed" || m.status === "not_sent";
 
-const TOOL_LABELS: Record<string, string> = { hand_off_to_team: "Handed the chat to the team" };
+const TOOL_LABELS: Record<string, string> = {
+  hand_off_to_teacher: "Handed the chat to the teacher",
+  hand_off_to_team: "Handed the chat to the team",
+  fact_check: "Fact check",
+  list_classes: "Looked up classes", get_class_schedule: "Looked up the schedule", get_faqs: "Looked up FAQs",
+  get_tutor_info: "Looked up payment details", get_one_to_one_info: "Looked up one-to-one rates",
+  get_my_family: "Looked up their students", get_my_fees: "Looked up their fees", get_my_materials: "Looked up materials",
+};
 
 function parseTools(raw: string | null): ToolRun[] {
   if (!raw) return [];
@@ -208,7 +221,7 @@ function MessageNotes({ m }: { m: Message }) {
     <div className={`msg-notes msg-notes-${m.direction}`}>
       {tools.map((t, i) => (
         <div key={i} className={`msg-note ${t.ok ? "" : "msg-note-warn"}`}>
-          <Glyph name="bot" size={12} /> {TOOL_LABELS[t.name] ?? `Ran ${t.name}`}{t.ok ? "" : ` (failed: ${t.error ?? "unknown error"})`}
+          <Glyph name="bot" size={12} /> {TOOL_LABELS[t.name] ?? `Ran ${t.name}`}{t.ok ? "" : t.name === "fact_check" ? `: ${t.error}` : ` (failed: ${t.error ?? "unknown error"})`}
         </div>
       ))}
       {m.agent_error && <div className="msg-note msg-note-warn">Fallback reply. Agent error: {m.agent_error}</div>}
@@ -285,6 +298,7 @@ function ContactInfo({ data }: { data: ConversationDetail }) {
       <div className="info-section">
         <div className="label">Language</div>
         <div className="info-lang"><LangChip language={contact.language} full /> <span className="muted small">{LANGUAGE_INFO[contact.language].hint}</span></div>
+        <div className="muted small">{contact.language_auto ? "Detected from their messages." : "Fixed by you; not detected."}</div>
       </div>
       <div className="info-section">
         <div className="label">Students</div>

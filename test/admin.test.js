@@ -123,7 +123,18 @@ describe("actions", () => {
     assert.equal(r.data.bot_paused, 0);
     r = await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "singlish" } });
     assert.equal(r.data.language, "singlish");
+    assert.equal(r.data.language_auto, 0, "choosing a language fixes it");
     assert.equal((await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "fr" } })).status, 400);
+  });
+
+  test("language back to auto: re-detected from their latest message that shows one", async () => {
+    assert.equal(db.getContactByWaId(PERERA).language_auto, 1, "auto by default");
+    await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "en" } });
+    db.logMessage({ id: "l1", waId: PERERA, direction: "in", type: "text", body: "class eppo irukku?" });
+    db.logMessage({ id: "l2", waId: PERERA, direction: "in", type: "text", body: "ok" });
+    const r = await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "auto" } });
+    assert.equal(r.data.language_auto, 1);
+    assert.equal(r.data.language, "tanglish");
   });
 
   test("reply as the teacher: sent on WhatsApp and logged in the chat", async () => {

@@ -2,7 +2,7 @@
 //
 // Tools are created per message for one contact: the contact comes from the handler,
 // never from the model, so no tool can read another family's data whatever the model asks.
-// Step 2: read-only tools. Write tools (trial, enrol, slips, handoff) come in later steps.
+// Read-only tools plus hand_off_to_teacher. Write tools (trial, enrol, slips) come in later steps.
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const dayName = (date) => DAY_NAMES[new Date(`${date}T00:00:00Z`).getUTCDay()];
@@ -19,6 +19,27 @@ function createTools({ db, contact, now = new Date() }) {
     c.mode === "online" ? (allowed.has(c.id ?? c.class_id) ? `Online: ${c.location}` : "Online (Zoom link shared after enrolment)") : c.location;
 
   const tools = {
+    hand_off_to_teacher: {
+      description:
+        "Pass this chat to the teacher (a human). Use it when they ask for the teacher or a person; want to enrol, " +
+        "book a trial or a one-to-one (ask the student's name, grade and class first); send a photo or document " +
+        "(it may be a payment slip, which you can't see); say they paid but get_my_fees shows no record; complain; " +
+        "or ask something the other tools can't answer but the teacher could. The bot then goes quiet in this chat " +
+        "and the teacher replies here.",
+      parameters: {
+        summary: {
+          type: "string",
+          description: "For the teacher, one line each: what they want, student name and grade (or \"unknown\"), " +
+            "class, and anything else useful. Plain English.",
+        },
+      },
+      run: ({ summary }) => {
+        if (typeof summary !== "string" || !summary.trim()) return { error: "summary is required." };
+        db.setBotPaused(contact.id, true, `Handed to the teacher by the bot:\n${summary.trim()}`.slice(0, 2000));
+        return { ok: true, note: "The teacher has the summary and will reply in this chat. The bot is now paused here." };
+      },
+    },
+
     get_tutor_info: {
       description: "The tutor's name, background, qualifications, and how to pay fees.",
       parameters: {},
