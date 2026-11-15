@@ -100,7 +100,7 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
       try {
         const res = await whatsapp.send(waId, { type: "text", body: text });
         const id = res?.messages?.[0]?.id ?? `catalyst.${crypto.randomUUID()}`;
-        db.logMessage({ id, waId, direction: "out", type: "text", body: text });
+        db.logMessage({ id, waId, direction: "out", type: "text", body: text, status: "sent" });
         return [200, { ok: true, id }];
       } catch (err) {
         log.error(`Catalyst reply to ${waId} failed:`, err.message);

@@ -186,7 +186,12 @@ CREATE TABLE IF NOT EXISTS messages (
   direction  TEXT NOT NULL CHECK (direction IN ('in', 'out')),
   type       TEXT NOT NULL,
   body       TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  -- Outgoing only (NULL for incoming and older rows). Keep in sync with migrateMessages in db/index.js.
+  status     TEXT CHECK (status IN ('sent', 'failed', 'not_sent')), -- failed = WhatsApp refused it; not_sent = never tried
+  error      TEXT,  -- why it failed / wasn't sent
+  tools      TEXT,  -- JSON [{ name, ok, error? }]: tools the agent ran for this reply
+  agent_error TEXT  -- set when this is the fallback message because the agent failed
 );
 
 CREATE INDEX IF NOT EXISTS idx_students_contact   ON students(contact_id);

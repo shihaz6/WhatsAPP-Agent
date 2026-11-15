@@ -3,6 +3,8 @@
 //   -> AI agent -> send replies -> log replies
 // db, whatsapp and agent are passed in so tests can run it without a network.
 
+const crypto = require("node:crypto");
+
 // Reduce a raw webhook message to what the agent needs.
 function normalize(msg) {
   return {
@@ -57,18 +59,31 @@ function createHandler({ db, whatsapp, agent, log = console }) {
 
     const result = await agent.respond({ contact, incoming });
 
+    // Every reply is logged, delivered or not, so the dashboard shows what the bot did.
+    // The tools it ran and any agent error go on the first reply of the turn.
+    const logReply = (reply, i, { id, status, error = null }) => db.logMessage({
+      id: id ?? `local.${crypto.randomUUID()}`, waId: contact.wa_id, direction: "out", type: reply.type, body: reply.body,
+      status, error, ...(i === 0 ? { tools: result.toolLog, agentError: result.failed ? (result.error ?? "Agent failed") : null } : {}),
+    });
+
     if (!configured) {
       log.warn("WhatsApp is not configured; replies not sent:", result.replies);
+      result.replies.forEach((r, i) => logReply(r, i, { status: "not_sent", error: "WhatsApp is not configured (WHATSAPP_TOKEN / PHONE_NUMBER_ID)" }));
       return { status: "handled", ...result };
     }
-    for (const reply of result.replies) {
+    let failure = null;
+    for (const [i, reply] of result.replies.entries()) {
+      if (failure) { // don't send later parts of a reply out of order
+        logReply(reply, i, { status: "not_sent", error: "Skipped because an earlier part didn't send" });
+        continue;
+      }
       try {
         const res = await whatsapp.send(contact.wa_id, reply);
-        const outId = res?.messages?.[0]?.id;
-        if (outId) db.logMessage({ id: outId, waId: contact.wa_id, direction: "out", type: reply.type, body: reply.body });
+        logReply(reply, i, { id: res?.messages?.[0]?.id, status: "sent" });
       } catch (err) {
+        failure = err;
         log.error(`Failed to send to ${contact.wa_id}:`, err.message);
-        break; // don't send later parts of a reply out of order
+        logReply(reply, i, { status: "failed", error: err.message });
       }
     }
     return { status: "handled", ...result };

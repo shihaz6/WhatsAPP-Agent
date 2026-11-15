@@ -43,6 +43,25 @@ const LANGUAGES = ["en", "si", "ta", "singlish", "tanglish"];
 // Bring an existing database up to date. CREATE TABLE IF NOT EXISTS doesn't change existing
 // tables, so a CHECK that grew needs the table rebuilt (SQLite can't alter a CHECK).
 function migrate(conn) {
+  migrateContacts(conn);
+  migrateMessages(conn);
+}
+
+// Delivery and agent details on messages (added after the first databases were made).
+const MESSAGE_COLUMNS = {
+  status: "TEXT CHECK (status IN ('sent', 'failed', 'not_sent'))",
+  error: "TEXT",
+  tools: "TEXT",
+  agent_error: "TEXT",
+};
+function migrateMessages(conn) {
+  const have = new Set(conn.prepare("PRAGMA table_info(messages)").all().map((c) => c.name));
+  for (const [name, type] of Object.entries(MESSAGE_COLUMNS)) {
+    if (!have.has(name)) conn.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
+  }
+}
+
+function migrateContacts(conn) {
   const row = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'contacts'").get();
   if (!row || row.sql.includes("'singlish'")) return;
   const check = `CHECK (language IN (${LANGUAGES.map((l) => `'${l}'`).join(", ")}))`;
@@ -511,7 +530,7 @@ function listFaqs() {
 
 // Recent messages with one WhatsApp number, oldest first (for the agent's chat history).
 function recentMessages(waId, limit = 16) {
-  return q(`SELECT id, direction, type, body, created_at FROM messages WHERE wa_id = ?
+  return q(`SELECT id, direction, type, body, created_at, status, error, tools, agent_error FROM messages WHERE wa_id = ?
             ORDER BY rowid DESC LIMIT ?`).all(waId, limit).map(plain).reverse();
 }
 
@@ -539,9 +558,12 @@ function setConversation(contactId, state, context = {}) {
 }
 
 // Returns false if this message id was already logged (a webhook retry).
-function logMessage({ id, waId, direction, type, body }) {
-  return q(`INSERT INTO messages (id, wa_id, direction, type, body) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO NOTHING`).run(id, waId, direction, type, body ?? null).changes > 0;
+// status/error/tools/agentError are for outgoing replies; see the messages table in schema.sql.
+function logMessage({ id, waId, direction, type, body, status = null, error = null, tools = null, agentError = null }) {
+  return q(`INSERT INTO messages (id, wa_id, direction, type, body, status, error, tools, agent_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
+    .run(id, waId, direction, type, body ?? null, status, error, tools?.length ? JSON.stringify(tools) : null, agentError)
+    .changes > 0;
 }
 
 // ---------- Dashboard (AlchemyX Catalyst) ----------
@@ -575,7 +597,11 @@ function dashboardCounts(sinceIso) {
     active_enrollments: one("SELECT COUNT(*) AS n FROM enrollments WHERE status = 'active'"),
     paused: one("SELECT COUNT(*) AS n FROM contacts WHERE bot_paused = 1"),
     messages_in_24h: one("SELECT COUNT(*) AS n FROM messages WHERE direction = 'in' AND created_at >= ?", sinceIso),
-    messages_out_24h: one("SELECT COUNT(*) AS n FROM messages WHERE direction = 'out' AND created_at >= ?", sinceIso),
+    messages_out_24h: one(`SELECT COUNT(*) AS n FROM messages WHERE direction = 'out' AND created_at >= ?
+                           AND (status IS NULL OR status = 'sent')`, sinceIso),
+    undelivered_24h: one(`SELECT COUNT(*) AS n FROM messages WHERE direction = 'out' AND created_at >= ?
+                          AND status IN ('failed', 'not_sent')`, sinceIso),
+    agent_errors_24h: one("SELECT COUNT(*) AS n FROM messages WHERE agent_error IS NOT NULL AND created_at >= ?", sinceIso),
     slips_waiting: one("SELECT COUNT(*) AS n FROM payments WHERE status = 'slip_received'"),
     owed_total: one(`SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE ${OWED}`),
     languages: q("SELECT language, COUNT(*) AS n FROM contacts GROUP BY language ORDER BY n DESC").all().map(plain),

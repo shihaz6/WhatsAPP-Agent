@@ -30,6 +30,19 @@ export interface Message {
   type: string;
   body: string | null;
   created_at: string;
+  /** Outgoing only; null for incoming and older rows. */
+  status: "sent" | "failed" | "not_sent" | null;
+  error: string | null;
+  /** JSON array of ToolRun. */
+  tools: string | null;
+  /** Set when this is the fallback reply because the agent failed. */
+  agent_error: string | null;
+}
+
+export interface ToolRun {
+  name: string;
+  ok: boolean;
+  error?: string;
 }
 
 export interface Enrollment {
@@ -120,6 +133,8 @@ export interface Overview {
     paused: number;
     messages_in_24h: number;
     messages_out_24h: number;
+    undelivered_24h: number;
+    agent_errors_24h: number;
     slips_waiting: number;
     owed_total: number;
     languages: { language: Language; n: number }[];

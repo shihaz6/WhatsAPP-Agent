@@ -3,7 +3,7 @@ import { api } from "../api";
 import { Glyph } from "../Glyph";
 import { LANGUAGE_INFO, ago, clock, dayLabel, displayName, messageText, money } from "../format";
 import { go, href } from "../nav";
-import { LANGUAGES, type ConversationDetail, type ConversationSummary, type Language, type Message } from "../types";
+import { LANGUAGES, type ConversationDetail, type ConversationSummary, type Language, type Message, type ToolRun } from "../types";
 import { Avatar, Empty, ErrorNote, LangChip, Skeleton, useData } from "../ui";
 
 type Filter = "all" | "paused" | Language;
@@ -168,14 +168,51 @@ function Messages({ messages }: { messages: Message[] }) {
         return (
           <div key={m.id} className="msg-wrap">
             {divider && <div className="day-divider"><span>{day}</span></div>}
-            <div className={`msg msg-${m.direction} ${m.body ? "" : "msg-media"}`}>
+            <div className={`msg msg-${m.direction} ${m.body ? "" : "msg-media"} ${undelivered(m) ? "msg-undelivered" : ""}`}>
               <div className="msg-body">{formatWhatsApp(messageText(m.type, m.body))}</div>
-              <div className="msg-meta num">{clock(m.created_at)}</div>
+              <div className="msg-meta num">
+                {m.status === "failed" && <span className="msg-flag">Not delivered · </span>}
+                {m.status === "not_sent" && <span className="msg-flag">Not sent · </span>}
+                {clock(m.created_at)}
+              </div>
             </div>
+            <MessageNotes m={m} />
           </div>
         );
       })}
       <div ref={end} />
+    </div>
+  );
+}
+
+const undelivered = (m: Message) => m.status === "failed" || m.status === "not_sent";
+
+const TOOL_LABELS: Record<string, string> = { hand_off_to_team: "Handed the chat to the team" };
+
+function parseTools(raw: string | null): ToolRun[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((t) => t && typeof t.name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// What the agent did behind a reply: tools it ran, why it fell back, why the reply didn't arrive.
+// Only the dashboard sees these; they are never sent to the customer.
+function MessageNotes({ m }: { m: Message }) {
+  const tools = parseTools(m.tools);
+  if (!tools.length && !m.agent_error && !(undelivered(m) && m.error)) return null;
+  return (
+    <div className={`msg-notes msg-notes-${m.direction}`}>
+      {tools.map((t, i) => (
+        <div key={i} className={`msg-note ${t.ok ? "" : "msg-note-warn"}`}>
+          <Glyph name="bot" size={12} /> {TOOL_LABELS[t.name] ?? `Ran ${t.name}`}{t.ok ? "" : ` (failed: ${t.error ?? "unknown error"})`}
+        </div>
+      ))}
+      {m.agent_error && <div className="msg-note msg-note-warn">Fallback reply. Agent error: {m.agent_error}</div>}
+      {undelivered(m) && m.error && <div className="msg-note msg-note-bad">{m.status === "failed" ? "WhatsApp refused it: " : ""}{m.error}</div>}
     </div>
   );
 }

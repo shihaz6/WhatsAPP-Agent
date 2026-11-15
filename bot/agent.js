@@ -120,7 +120,10 @@ function toWhatsApp(text) {
 // `since` (ISO time, HISTORY_SINCE in .env) drops older messages: chats from the old tutor bot
 // made the model answer about classes again (seen on the phone), whatever the prompt said.
 function historyMessages(db, contact, incoming, limit, since) {
-  const rows = db.recentMessages(contact.wa_id, limit).filter((r) => !since || !r.created_at || r.created_at >= since);
+  const rows = db.recentMessages(contact.wa_id, limit)
+    .filter((r) => !since || !r.created_at || r.created_at >= since)
+    // Replies that never reached the customer aren't part of the chat they saw.
+    .filter((r) => r.status !== "failed" && r.status !== "not_sent");
   if (!rows.some((r) => r.id === incoming.id)) {
     rows.push({ id: incoming.id, direction: "in", type: incoming.type, body: incoming.text });
   }
@@ -145,7 +148,9 @@ function createAgent({ db, llm, log = console, maxRounds = 6, historyLimit = 16,
       ...historyMessages(db, contact, incoming, historyLimit, historySince),
       { role: "system", content: languageReminder(contact.language) },
     ];
-    const toolCalls = [];
+    const toolCalls = []; // names, in order
+    const toolLog = []; // { name, ok, error? }, shown on the dashboard
+    let error;
 
     try {
       for (let round = 0; round < maxRounds; round++) {
@@ -157,20 +162,24 @@ function createAgent({ db, llm, log = console, maxRounds = 6, historyLimit = 16,
             const name = call.function?.name;
             const result = tools.run(name, call.function?.arguments);
             toolCalls.push(name);
+            const failed = typeof result?.error === "string" ? result.error : null;
+            toolLog.push(failed ? { name: String(name), ok: false, error: failed } : { name: String(name), ok: true });
             messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
           }
           continue;
         }
 
         const text = toWhatsApp(message.content);
-        if (!text) break;
-        return { replies: [{ type: "text", body: text }], toolCalls };
+        if (!text) { error = "The model returned an empty answer"; break; }
+        return { replies: [{ type: "text", body: text }], toolCalls, toolLog };
       }
-      log.warn(`Agent gave no answer within ${maxRounds} rounds for ${contact.wa_id}`, toolCalls);
+      error ??= `No answer within ${maxRounds} rounds of tool calls`;
+      log.warn(`Agent gave no answer for ${contact.wa_id}: ${error}`, toolCalls);
     } catch (err) {
-      log.error(`Agent failed for ${contact.wa_id}:`, err.message);
+      error = err.message || String(err);
+      log.error(`Agent failed for ${contact.wa_id}:`, error);
     }
-    return { replies: [{ type: "text", body: fallback }], toolCalls, failed: true };
+    return { replies: [{ type: "text", body: fallback }], toolCalls, toolLog, failed: true, error };
   }
 
   return { respond };

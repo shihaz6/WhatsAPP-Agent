@@ -21,7 +21,13 @@ export function Overview({ onAuthError }: { onAuthError: () => void }) {
       <PageHead title={`${greeting()}${firstName ? `, ${firstName}` : ""}`} sub={today()} />
 
       <section className="stats" aria-label="Key numbers">
-        <Stat label="Messages (24h)" value={counts.messages_in_24h} note={`${counts.messages_out_24h} replies sent`} tone="green" />
+        <Stat label="Messages (24h)" value={counts.messages_in_24h}
+          tone={counts.undelivered_24h || counts.agent_errors_24h ? "amber" : "green"}
+          note={[
+            `${counts.messages_out_24h} replies sent`,
+            counts.undelivered_24h ? `${counts.undelivered_24h} not delivered` : "",
+            counts.agent_errors_24h ? `${counts.agent_errors_24h} agent ${counts.agent_errors_24h === 1 ? "error" : "errors"}` : "",
+          ].filter(Boolean).join(" · ")} />
         <Stat label="With the teacher" value={counts.paused} tone={counts.paused ? "amber" : "green"}
           note={counts.paused ? "Bot paused on these chats" : "Bot is handling every chat"} />
         <Stat label="Slips to review" value={counts.slips_waiting} tone={counts.slips_waiting ? "amber" : "green"}

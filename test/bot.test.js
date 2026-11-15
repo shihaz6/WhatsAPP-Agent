@@ -97,11 +97,37 @@ describe("message pipeline", () => {
       ["first", "re: first", "second", "re: second", "third", "re: third"]);
   });
 
-  test("a failed send is logged, not thrown", async () => {
+  test("a failed send is saved as failed (with the reason), not thrown", async () => {
     const bad = createHandler({ db, whatsapp: fakeWhatsApp({ failSend: true }), agent, log: quietLog });
     const r = await bad.handleMessage(textMsg(NEW_NUMBER, "hello"));
     assert.equal(r.status, "handled");
-    assert.deepEqual(messagesFor(NEW_NUMBER).map((m) => m.direction), ["in"], "no 'out' row for a failed send");
+    const out = messagesFor(NEW_NUMBER).filter((m) => m.direction === "out");
+    assert.deepEqual(out.map((m) => [m.body, m.status, m.error]), [["re: hello", "failed", "Graph API 500: boom"]]);
+    assert.match(out[0].id, /^local./);
+    assert.equal(db.dashboardCounts("2000-01-01T00:00:00Z").messages_out_24h, 0, "not counted as sent");
+    assert.equal(db.dashboardCounts("2000-01-01T00:00:00Z").undelivered_24h, 1);
+  });
+
+  test("after a failed part, later parts are saved as not sent and not attempted", async () => {
+    let calls = 0;
+    const flaky = { ...fakeWhatsApp(), isConfigured: () => true, markAsRead: async () => {},
+      send: async () => { calls++; throw new Error("Graph API 400: bad"); } };
+    const two = { respond: async () => ({ replies: [{ type: "text", body: "one" }, { type: "text", body: "two" }] }) };
+    await createHandler({ db, whatsapp: flaky, agent: two, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "hi"));
+    assert.equal(calls, 1);
+    assert.deepEqual(messagesFor(NEW_NUMBER).filter((m) => m.direction === "out").map((m) => [m.body, m.status]),
+      [["one", "failed"], ["two", "not_sent"]]);
+  });
+
+  test("sent replies carry the agent's tool runs and agent error", async () => {
+    const fallback = { respond: async () => ({ replies: [{ type: "text", body: "Sorry" }], failed: true, error: "Groq API 429: rate limit",
+      toolLog: [{ name: "hand_off_to_team", ok: false, error: "summary is required." }] }) };
+    await createHandler({ db, whatsapp: wa, agent: fallback, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "hi"));
+    const [out] = messagesFor(NEW_NUMBER).filter((m) => m.direction === "out");
+    assert.equal(out.status, "sent");
+    assert.equal(out.id, "wamid.out.1");
+    assert.equal(out.agent_error, "Groq API 429: rate limit");
+    assert.deepEqual(JSON.parse(out.tools), [{ name: "hand_off_to_team", ok: false, error: "summary is required." }]);
   });
 
   test("an agent crash is contained", async () => {
@@ -118,6 +144,9 @@ describe("message pipeline", () => {
     assert.equal(r.replies.length, 1);
     assert.equal(off.sent.length, 0);
     assert.equal(off.read.length, 0);
+    const out = messagesFor(NEW_NUMBER).filter((m) => m.direction === "out");
+    assert.deepEqual(out.map((m) => [m.body, m.status]), [["re: hi", "not_sent"]], "saved so the dashboard shows it");
+    assert.match(out[0].error, /not configured/);
   });
 
   test("malformed messages are ignored", async () => {

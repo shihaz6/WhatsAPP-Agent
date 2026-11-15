@@ -67,6 +67,7 @@ describe("agent loop", () => {
     const r = await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "special price for 3 branches?") });
     assert.equal(r.replies[0].body, "I've passed this to the team.");
     assert.deepEqual(r.toolCalls, ["hand_off_to_team"]);
+    assert.deepEqual(r.toolLog, [{ name: "hand_off_to_team", ok: true }]);
     assert.equal(toolResults(llm.requests[1])[0].ok, true);
   });
 
@@ -84,6 +85,8 @@ describe("agent loop", () => {
     const [a, b] = toolResults(llm.requests[1]);
     assert.match(a.error, /Unknown tool/);
     assert.match(b.error, /JSON object/);
+    assert.deepEqual(r.toolLog.map((t) => [t.name, t.ok]), [["delete_everything", false], ["hand_off_to_team", false]]);
+    assert.match(r.toolLog[0].error, /Unknown tool/);
   });
 
   test("an endless tool loop stops at the round limit with the fallback", async () => {
@@ -92,6 +95,7 @@ describe("agent loop", () => {
     assert.equal(r.replies[0].body, FALLBACK);
     assert.equal(r.failed, true);
     assert.equal(llm.requests.length, 3);
+    assert.match(r.error, /3 rounds/);
   });
 
   test("an LLM error (e.g. Groq down or rate limited) gives the fallback", async () => {
@@ -99,11 +103,13 @@ describe("agent loop", () => {
     const r = await agentWith(llm).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "x") });
     assert.equal(r.replies[0].body, FALLBACK);
     assert.equal(r.failed, true);
+    assert.equal(r.error, "Groq API 429: rate limit");
   });
 
   test("an empty answer gives the fallback", async () => {
     const r = await agentWith(scriptedLLM(["   "])).respond({ contact: contact(FERNANDO), incoming: incoming(FERNANDO, "x") });
     assert.equal(r.replies[0].body, FALLBACK);
+    assert.match(r.error, /empty answer/);
   });
 });
 
@@ -130,6 +136,16 @@ describe("context sent to the model", () => {
     await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "fees?") });
     const convo = llm.requests[0].messages.slice(1, -1).map((m) => [m.role, m.content]);
     assert.deepEqual(convo, [["user", "hi"], ["assistant", "Hello!"], ["user", "[sent a photo]"], ["user", "fees?"]]);
+  });
+
+  test("replies that never reached the customer are left out of the history", async () => {
+    db.logMessage({ id: "h1", waId: PERERA, direction: "in", type: "text", body: "hi" });
+    db.logMessage({ id: "h2", waId: PERERA, direction: "out", type: "text", body: "lost", status: "failed", error: "boom" });
+    db.logMessage({ id: "h3", waId: PERERA, direction: "out", type: "text", body: "unsent", status: "not_sent" });
+    db.logMessage({ id: "h4", waId: PERERA, direction: "out", type: "text", body: "Hello!", status: "sent" });
+    const llm = scriptedLLM(["ok"]);
+    await agentWith(llm).respond({ contact: contact(PERERA), incoming: incoming(PERERA, "fees?") });
+    assert.deepEqual(llm.requests[0].messages.slice(1, -1).map((m) => m.content), ["hi", "Hello!", "fees?"]);
   });
 
   test("history before HISTORY_SINCE (the old tutor bot's chats) is left out", async () => {
