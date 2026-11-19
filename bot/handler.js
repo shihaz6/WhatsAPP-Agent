@@ -1,6 +1,7 @@
 // The pipeline every incoming WhatsApp message goes through:
-//   log (and drop duplicates) -> ensure contact -> skip if paused -> mark read + "typing…"
-//   -> AI agent -> send replies -> log replies
+//   log (and drop duplicates) -> ensure contact -> skip if the bot is off or this chat is paused
+//   -> mark read + "typing…" -> AI agent -> send replies -> log replies
+//   -> if the bot handed the chat over, tell the owner's handover number
 // db, whatsapp and agent are passed in so tests can run it without a network.
 
 const crypto = require("node:crypto");
@@ -47,7 +48,7 @@ function createHandler({ db, whatsapp, agent, log = console, mediaDir }) {
       return { status: "duplicate" };
     }
 
-    // Keep the file before anything else, even for a paused chat: the teacher needs to see slips.
+    // Keep the file before anything else, even for a paused chat: the owner may need to see it.
     if (incoming.media && whatsapp.isConfigured() && whatsapp.downloadMedia) {
       try {
         await saveMedia({ db, whatsapp, messageId: incoming.id, mediaId: incoming.media.id, mime: incoming.media.mime, ...(mediaDir ? { dir: mediaDir } : {}) });
@@ -57,6 +58,10 @@ function createHandler({ db, whatsapp, agent, log = console, mediaDir }) {
     }
 
     const contact = db.ensureContact(incoming.from);
+    if (db.getBusiness()?.bot_enabled === 0) {
+      log.log(`Bot is switched off; not replying to ${contact.wa_id}.`);
+      return { status: "bot_off" };
+    }
     if (contact.bot_paused) {
       log.log(`Bot paused for ${contact.wa_id}; not replying.`);
       return { status: "paused" };
@@ -100,7 +105,22 @@ function createHandler({ db, whatsapp, agent, log = console, mediaDir }) {
         logReply(reply, i, { status: "failed", error: err.message });
       }
     }
+    if (result.handedOff) await notifyOwner(contact.wa_id);
     return { status: "handled", ...result };
+  }
+
+  // Best effort: WhatsApp only delivers a free-form message to a number that has messaged the
+  // business in the last 24 hours, so this can fail; the chat still shows as "Needs you".
+  async function notifyOwner(customerWaId) {
+    const to = db.getBusiness()?.handover_number;
+    if (!to || to === customerWaId) return;
+    const summary = db.getContactByWaId(customerWaId)?.paused_reason?.replace(/^Handed over by the bot:\n/, "") ?? "";
+    const body = `Catalyst: a customer needs you.\nFrom: +${customerWaId}\n${summary}\nReply to them from the dashboard (Conversations).`.slice(0, 4096);
+    try {
+      await whatsapp.send(to, { type: "text", body });
+    } catch (err) {
+      log.error(`Could not tell the handover number ${to} about ${customerWaId}:`, err.message);
+    }
   }
 
   return { handleMessage };

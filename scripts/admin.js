@@ -1,8 +1,7 @@
-// Small admin tool for the tutor / for testing. Works while the server is running.
-//   npm run admin -- show   <wa_id>            contact, students, conversation state, last messages
-//   npm run admin -- pause  <wa_id> [reason]   bot stops replying (human handoff)
+// Small admin tool for testing. Works while the server is running.
+//   npm run admin -- show   <wa_id>            contact and last messages
+//   npm run admin -- pause  <wa_id> [reason]   bot stops replying (handover)
 //   npm run admin -- resume <wa_id>            bot replies again
-//   npm run admin -- reset  <wa_id>            clear the conversation state
 //   npm run admin -- lang   <wa_id> <language> auto (follow what they write) or fix it: en|si|ta|singlish|tanglish
 // wa_id is the number as WhatsApp sends it: country code, no "+" or spaces (e.g. 94771234567).
 
@@ -15,7 +14,7 @@ const db = require("../db");
 const [cmd, rawWaId, ...rest] = process.argv.slice(2);
 const waId = rawWaId?.replace(/[^\d]/g, "");
 const usage = () => {
-  console.log("Usage: npm run admin -- <show|pause|resume|reset|lang> <wa_id> [reason|language]");
+  console.log("Usage: npm run admin -- <show|pause|resume|lang> <wa_id> [reason|language]");
   process.exit(1);
 };
 if (!cmd || !waId) usage();
@@ -33,13 +32,8 @@ if (!contact) {
 switch (cmd) {
   case "show": {
     console.log("Contact:", contact);
-    console.log("Students:", db.listStudents(contact.id).map((s) => `${s.name} (${s.grade ?? "?"})`));
-    console.log("Conversation:", db.getConversation(contact.id));
-    const msgs = db.open().prepare(
-      "SELECT direction, type, body, created_at FROM messages WHERE wa_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 10",
-    ).all(waId).reverse();
     console.log("Last messages:");
-    for (const m of msgs) console.log(`  ${m.created_at} ${m.direction === "in" ? "<-" : "->"} [${m.type}] ${m.body ?? ""}`);
+    for (const m of db.recentMessages(waId, 10)) console.log(`  ${m.created_at} ${m.direction === "in" ? "<-" : "->"} [${m.type}] ${m.body ?? ""}`);
     break;
   }
   case "pause":
@@ -49,10 +43,6 @@ switch (cmd) {
   case "resume":
     db.setBotPaused(contact.id, false);
     console.log(`Bot resumed for ${waId}.`);
-    break;
-  case "reset":
-    db.setConversation(contact.id, "idle", {});
-    console.log(`Conversation reset for ${waId}.`);
     break;
   case "lang": {
     const language = rest[0]?.toLowerCase();

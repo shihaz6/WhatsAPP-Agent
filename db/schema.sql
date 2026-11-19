@@ -1,213 +1,107 @@
--- Tutor WhatsApp agent: data model (SQLite).
--- Conventions: times are local to the tutor's timezone (tutor.timezone);
--- day_of_week is ISO (1 = Monday ... 7 = Sunday); money is whole LKR (or tutor.currency);
--- timestamps are ISO 8601 UTC strings; local dates are 'YYYY-MM-DD'.
+-- Catalyst WhatsApp shop assistant: data model (SQLite).
+-- Everything the owner enters on the dashboard lives here, and the bot answers only from it.
+-- Conventions: money is whole units of business.currency (e.g. LKR 1250); timestamps are
+-- ISO 8601 UTC strings ('2026-11-19T15:08:58Z'). Safe to run on every start (IF NOT EXISTS / OR IGNORE).
 
 PRAGMA foreign_keys = ON;
 
--- The tutor running this agent (single row).
-CREATE TABLE IF NOT EXISTS tutor (
-  id                   INTEGER PRIMARY KEY CHECK (id = 1),
-  name                 TEXT NOT NULL,
-  phone                TEXT,
-  bio                  TEXT,
-  qualifications       TEXT,
-  timezone             TEXT NOT NULL DEFAULT 'Asia/Colombo',
-  currency             TEXT NOT NULL DEFAULT 'LKR',
-  payment_instructions TEXT
+-- The business the bot works for (single row, created empty). Bot settings > Business information,
+-- plus the bot's on/off switch, the handover number and the product sheet link.
+CREATE TABLE IF NOT EXISTS business (
+  id                  INTEGER PRIMARY KEY CHECK (id = 1),
+  name                TEXT NOT NULL DEFAULT '',  -- shown in the dashboard header; the bot speaks for it
+  owner_name          TEXT,                      -- greeting and avatar on the dashboard
+  opening_hours       TEXT,                      -- free text, e.g. 'Mon–Sat, 9:00 AM–7:00 PM'
+  location            TEXT,
+  payment_details     TEXT,                      -- how customers pay (bank details, COD, ...)
+  delivery_info       TEXT,                      -- areas, times, charges
+  handover_number     TEXT,                      -- WhatsApp number told about each handover (digits only)
+  bot_enabled         INTEGER NOT NULL DEFAULT 1 CHECK (bot_enabled IN (0, 1)),  -- 0 = bot silent for everyone
+  currency            TEXT NOT NULL DEFAULT 'LKR',
+  timezone            TEXT NOT NULL DEFAULT 'Asia/Colombo',
+  product_sheet_url   TEXT,                      -- Google Sheet the products are synced from (sync not built yet)
+  products_synced_at  TEXT,
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+INSERT OR IGNORE INTO business (id) VALUES (1);
 
--- What the tutor teaches.
-CREATE TABLE IF NOT EXISTS subjects (
+-- What the business sells. Products page (manual, CSV import, or the Google Sheet).
+CREATE TABLE IF NOT EXISTS products (
   id          INTEGER PRIMARY KEY,
-  name        TEXT NOT NULL,
-  level       TEXT NOT NULL,              -- e.g. 'O/L', 'A/L'
-  description TEXT,
-  UNIQUE (name, level)
+  name        TEXT NOT NULL COLLATE NOCASE UNIQUE,  -- imports match existing products by name
+  price       INTEGER NOT NULL CHECK (price >= 0),  -- selling price, whole currency units
+  stock       INTEGER CHECK (stock IS NULL OR stock >= 0),  -- NULL = not tracked
+  category    TEXT,
+  description TEXT,                                 -- size, pack, details the bot can quote
+  active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),  -- 0 = hidden from the bot
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
 
--- Recurring group classes (one row per weekly batch).
-CREATE TABLE IF NOT EXISTS classes (
-  id               INTEGER PRIMARY KEY,
-  subject_id       INTEGER NOT NULL REFERENCES subjects(id),
-  title            TEXT NOT NULL,
-  class_type       TEXT NOT NULL CHECK (class_type IN ('theory', 'revision', 'paper')),
-  mode             TEXT NOT NULL CHECK (mode IN ('online', 'physical')),
-  location         TEXT,                  -- hall address or meeting link
-  day_of_week      INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
-  start_time       TEXT NOT NULL,         -- 'HH:MM'
-  duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
-  monthly_fee      INTEGER NOT NULL CHECK (monthly_fee >= 0),
-  capacity         INTEGER,
-  active           INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
-);
-
--- Dates a class doesn't run as usual (holidays, reschedules).
-CREATE TABLE IF NOT EXISTS class_exceptions (
+-- Ready answers the bot can give. Bot settings > Frequently asked questions.
+CREATE TABLE IF NOT EXISTS faqs (
   id         INTEGER PRIMARY KEY,
-  class_id   INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
-  date       TEXT NOT NULL,               -- date of the normal session
-  status     TEXT NOT NULL CHECK (status IN ('cancelled', 'rescheduled')),
-  new_date   TEXT,                        -- for rescheduled
-  new_time   TEXT,
-  note       TEXT,
-  UNIQUE (class_id, date)
+  question   TEXT NOT NULL,
+  answer     TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
--- A WhatsApp number that has messaged the agent: a parent or an adult student.
--- Created on the first message; students are added only when they enrol or book.
+-- Languages the bot may reply in. Bot settings > Reply languages.
+-- si covers Sinhala script and Singlish; ta covers Tamil script and Tanglish.
+CREATE TABLE IF NOT EXISTS reply_languages (
+  code    TEXT PRIMARY KEY CHECK (code IN ('en', 'si', 'ta')),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
+);
+INSERT OR IGNORE INTO reply_languages (code) VALUES ('si'), ('ta'), ('en');
+
+-- When the bot hands a chat to the owner. Bot settings > Handover > "Hand over when".
+CREATE TABLE IF NOT EXISTS handover_rules (
+  key     TEXT PRIMARY KEY,
+  label   TEXT NOT NULL,                  -- shown on the dashboard and given to the bot as the rule
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  sort    INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO handover_rules (key, label, sort) VALUES
+  ('asks_for_person', 'Customer asks to speak to a person', 1),
+  ('bot_unsure',      'Bot is unsure of the answer', 2),
+  ('bulk_order',      'Bulk order over 10 items', 3);
+
+-- A WhatsApp number that has messaged the business. Created on the first message.
 CREATE TABLE IF NOT EXISTS contacts (
   id            INTEGER PRIMARY KEY,
-  wa_id         TEXT NOT NULL UNIQUE,     -- WhatsApp number (msg.from)
+  wa_id         TEXT NOT NULL UNIQUE,     -- WhatsApp number (msg.from), digits only
   name          TEXT,
-  kind          TEXT CHECK (kind IN ('parent', 'student')),  -- NULL until known
   -- en | si / ta (Sinhala / Tamil script) | singlish / tanglish (written in English letters)
   language      TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'si', 'ta', 'singlish', 'tanglish')),
-  -- 1 = language follows what they write (detected from each message); 0 = fixed by the teacher.
-  -- Keep in sync with CONTACT_COLUMNS in db/index.js (added to older databases there).
+  -- 1 = language follows what they write (detected from each message); 0 = fixed on the dashboard.
   language_auto INTEGER NOT NULL DEFAULT 1 CHECK (language_auto IN (0, 1)),
-  bot_paused    INTEGER NOT NULL DEFAULT 0 CHECK (bot_paused IN (0, 1)),  -- human handoff
-  paused_reason TEXT,
+  bot_paused    INTEGER NOT NULL DEFAULT 0 CHECK (bot_paused IN (0, 1)),  -- handed over to the owner
+  paused_reason TEXT,                     -- the bot's handover summary, or why the owner took over
   paused_at     TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
--- A learner. Belongs to one contact; a parent contact can have several students.
-CREATE TABLE IF NOT EXISTS students (
-  id         INTEGER PRIMARY KEY,
-  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-  name       TEXT NOT NULL COLLATE NOCASE,
-  grade      TEXT,
-  school     TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  UNIQUE (contact_id, name)
-);
-
-CREATE TABLE IF NOT EXISTS enrollments (
-  id          INTEGER PRIMARY KEY,
-  student_id  INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  class_id    INTEGER NOT NULL REFERENCES classes(id),
-  status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'cancelled')),
-  enrolled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  UNIQUE (student_id, class_id)
-);
-
--- Monthly class fees and their bank-slip review:
---   due -> slip_received -> approved
---                        -> rejected -> slip_received (new slip) -> ...
---   due -> waived
-CREATE TABLE IF NOT EXISTS payments (
-  id               INTEGER PRIMARY KEY,
-  student_id       INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  class_id         INTEGER NOT NULL REFERENCES classes(id),
-  month            TEXT NOT NULL,         -- 'YYYY-MM'
-  amount           INTEGER NOT NULL CHECK (amount >= 0),
-  status           TEXT NOT NULL DEFAULT 'due'
-                   CHECK (status IN ('due', 'slip_received', 'approved', 'rejected', 'waived')),
-  slip_media_id    TEXT,                  -- WhatsApp media id of the slip image
-  slip_reference   TEXT,                  -- reference number written on the slip, if given
-  slip_received_at TEXT,
-  reviewed_by      TEXT,                  -- who approved / rejected it
-  reviewed_at      TEXT,
-  review_note      TEXT,                  -- e.g. why a slip was rejected
-  UNIQUE (student_id, class_id, month),
-  CHECK (status NOT IN ('slip_received', 'rejected') OR slip_media_id IS NOT NULL),
-  CHECK (status NOT IN ('approved', 'rejected') OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL))
-);
-
--- Trial session of a group class: one specific class on one specific date.
-CREATE TABLE IF NOT EXISTS trials (
-  id         INTEGER PRIMARY KEY,
-  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  class_id   INTEGER NOT NULL REFERENCES classes(id),
-  date       TEXT NOT NULL,               -- date the session actually runs
-  status     TEXT NOT NULL DEFAULT 'booked' CHECK (status IN ('booked', 'attended', 'no_show', 'cancelled')),
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
--- One live trial per student per class (a cancelled one can be rebooked).
-CREATE UNIQUE INDEX IF NOT EXISTS uq_trials_live ON trials(student_id, class_id) WHERE status != 'cancelled';
-
--- One-to-one sessions a student asks for.
-CREATE TABLE IF NOT EXISTS bookings (
-  id               INTEGER PRIMARY KEY,
-  student_id       INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  subject_id       INTEGER NOT NULL REFERENCES subjects(id),
-  starts_at        TEXT NOT NULL,         -- 'YYYY-MM-DD HH:MM' local time
-  duration_minutes INTEGER NOT NULL DEFAULT 60,
-  status           TEXT NOT NULL DEFAULT 'requested'
-                   CHECK (status IN ('requested', 'confirmed', 'cancelled', 'completed')),
-  topic            TEXT,
-  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-
--- Rate for one-to-one sessions, per subject.
-CREATE TABLE IF NOT EXISTS individual_rates (
-  subject_id  INTEGER PRIMARY KEY REFERENCES subjects(id),
-  hourly_rate INTEGER NOT NULL CHECK (hourly_rate >= 0)
-);
-
--- Free time slots the tutor offers for one-to-one sessions (weekly).
-CREATE TABLE IF NOT EXISTS availability (
-  id          INTEGER PRIMARY KEY,
-  day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
-  start_time  TEXT NOT NULL,
-  end_time    TEXT NOT NULL
-);
-
--- Notes, past papers, recordings shared with a class.
-CREATE TABLE IF NOT EXISTS materials (
-  id         INTEGER PRIMARY KEY,
-  class_id   INTEGER REFERENCES classes(id) ON DELETE CASCADE,  -- NULL = everyone
-  title      TEXT NOT NULL,
-  kind       TEXT NOT NULL CHECK (kind IN ('notes', 'paper', 'recording', 'link')),
-  url        TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-
--- Ready answers the agent can use.
-CREATE TABLE IF NOT EXISTS faqs (
-  id       INTEGER PRIMARY KEY,
-  question TEXT NOT NULL,
-  answer   TEXT NOT NULL,
-  keywords TEXT NOT NULL                  -- comma-separated, lower case
-);
-
--- Conversation state per contact, for the multi-step flows.
-CREATE TABLE IF NOT EXISTS conversations (
-  contact_id INTEGER PRIMARY KEY REFERENCES contacts(id) ON DELETE CASCADE,
-  state      TEXT NOT NULL DEFAULT 'idle',
-  context    TEXT NOT NULL DEFAULT '{}',  -- JSON scratchpad for the current flow
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-
--- Every message in and out. The id is WhatsApp's message id, so it also
--- deduplicates webhook retries across server restarts. Keyed by raw wa_id so
--- logging never depends on other rows existing.
+-- Every message in and out. The id is WhatsApp's message id, so it also deduplicates webhook
+-- retries across restarts. Keyed by raw wa_id so logging never depends on other rows existing.
 CREATE TABLE IF NOT EXISTS messages (
-  id         TEXT PRIMARY KEY,
-  wa_id      TEXT NOT NULL,
-  direction  TEXT NOT NULL CHECK (direction IN ('in', 'out')),
-  type       TEXT NOT NULL,
-  body       TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  -- Outgoing only (NULL for incoming and older rows). Keep in sync with migrateMessages in db/index.js.
-  status     TEXT CHECK (status IN ('sent', 'failed', 'not_sent')), -- failed = WhatsApp refused it; not_sent = never tried
-  error      TEXT,  -- why it failed / wasn't sent
-  tools      TEXT,  -- JSON [{ name, ok, error? }]: tools the agent ran for this reply
-  agent_error TEXT, -- set when this is the fallback message because the agent failed
-  sent_by    TEXT CHECK (sent_by IN ('bot', 'teacher')), -- outgoing: who wrote it (NULL for older rows)
-  -- Incoming photos / PDFs (payment slips). body holds the caption. media_file is set once the
-  -- file is downloaded into MEDIA_DIR; NULL means it couldn't be saved.
-  media_id   TEXT,
-  media_mime TEXT,
-  media_file TEXT
+  id          TEXT PRIMARY KEY,
+  wa_id       TEXT NOT NULL,
+  direction   TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+  type        TEXT NOT NULL,              -- text, image, document, audio, ...
+  body        TEXT,                       -- text, or the caption of a photo/PDF
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  -- Outgoing only (NULL for incoming):
+  status      TEXT CHECK (status IN ('sent', 'failed', 'not_sent')),  -- failed = WhatsApp refused it; not_sent = never tried
+  error       TEXT,                       -- why it failed / wasn't sent
+  tools       TEXT,                       -- JSON [{ name, ok, error? }]: tools the bot ran for this reply
+  agent_error TEXT,                       -- set when this is the fallback message because the AI failed
+  sent_by     TEXT CHECK (sent_by IN ('bot', 'owner')),
+  -- Incoming photos / PDFs. media_file is set once the file is saved in MEDIA_DIR.
+  media_id    TEXT,
+  media_mime  TEXT,
+  media_file  TEXT
 );
-
-CREATE INDEX IF NOT EXISTS idx_students_contact   ON students(contact_id);
-CREATE INDEX IF NOT EXISTS idx_classes_subject    ON classes(subject_id);
-CREATE INDEX IF NOT EXISTS idx_enrollments_class  ON enrollments(class_id);
-CREATE INDEX IF NOT EXISTS idx_payments_status    ON payments(status);
-CREATE INDEX IF NOT EXISTS idx_payments_student   ON payments(student_id, status);
-CREATE INDEX IF NOT EXISTS idx_trials_class_date  ON trials(class_id, date);
-CREATE INDEX IF NOT EXISTS idx_bookings_student   ON bookings(student_id, starts_at);
-CREATE INDEX IF NOT EXISTS idx_messages_wa        ON messages(wa_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_wa ON messages(wa_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);

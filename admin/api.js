@@ -1,4 +1,4 @@
-// AlchemyX Catalyst: the tutor's dashboard. This file serves its JSON API (/admin/api/...)
+// AlchemyX Catalyst: the business owner's dashboard. This file serves its JSON API (/admin/api/...)
 // and the built web app (web/dist at /admin). When ADMIN_TOKEN is set, every API call needs
 //   Authorization: Bearer <ADMIN_TOKEN>
 // When ADMIN_TOKEN is not set the dashboard is OPEN: anyone who can reach the server
@@ -11,8 +11,7 @@ const { detectLanguage } = require("../bot/language");
 const { mediaPath, mediaDir: defaultMediaDir } = require("../bot/media");
 
 const DIST = path.join(__dirname, "..", "web", "dist");
-const MAX_JSON = 64 * 1024;
-const UNMATCHED_DAYS = 7; // how far back Payments looks for slips no fee points at
+const MAX_JSON = 2 * 1024 * 1024; // product imports send the whole sheet
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
   ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json",
@@ -47,45 +46,29 @@ function readJson(req) {
   });
 }
 
-function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = () => new Date(), log = console, mediaDir = defaultMediaDir() }) {
-  const tutorName = () => db.getTutor()?.name ?? "Tutor";
+const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  function conversation(waId) {
-    const contact = db.getContactByWaId(waId);
-    if (!contact) return null;
-    const students = db.listStudents(contact.id).map((s) => ({
-      ...s,
-      enrollments: db.listEnrollments(s.id),
-      trials: db.listTrials(s.id),
-      bookings: db.listBookings(s.id, { now: clock() }),
-    }));
-    return {
-      contact,
-      students,
-      payments: db.listPaymentsForContact(contact.id),
-      owed: db.amountDueForContact(contact.id),
-      messages: db.recentMessages(waId, 200),
-    };
-  }
+function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = () => new Date(), log = console, mediaDir = defaultMediaDir() }) {
+  const settings = () => ({
+    business: db.getBusiness(),
+    languages: db.listReplyLanguages(),
+    handover_rules: db.listHandoverRules(),
+    faqs: db.listFaqs(),
+  });
 
   // [method, pattern, handler(params, body)] — handlers return [status, data].
   const routes = [
-    ["GET", /^\/overview$/, () => {
-      const now = clock();
-      const since = new Date(now.getTime() - 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-      const classes = db.listClasses();
-      return [200, {
-        tutor: db.getTutor(),
-        counts: db.dashboardCounts(since),
-        sessions: db.upcomingSessions(classes.map((c) => c.id), { days: 7, now }),
-        paused: db.listConversations().filter((c) => c.bot_paused),
-        slips: db.listSlipsAwaitingReview(),
-      }];
-    }],
+    ["GET", /^\/overview$/, () => [200, {
+      business: db.getBusiness(),
+      counts: db.dashboardCounts(iso(new Date(clock().getTime() - 24 * 3600 * 1000))),
+      paused: db.listConversations().filter((c) => c.bot_paused),
+    }]],
+
+    // Conversations
     ["GET", /^\/conversations$/, () => [200, db.listConversations()]],
     ["GET", /^\/conversations\/(\d+)$/, ([waId]) => {
-      const c = conversation(waId);
-      return c ? [200, c] : [404, { error: "No such contact" }];
+      const contact = db.getContactByWaId(waId);
+      return contact ? [200, { contact, messages: db.recentMessages(waId, 200) }] : [404, { error: "No such contact" }];
     }],
     ["POST", /^\/conversations\/(\d+)\/pause$/, ([waId], body) => withContact(waId, (c) =>
       db.setBotPaused(c.id, true, String(body.reason ?? "").trim() || "Paused from Catalyst"))],
@@ -108,67 +91,35 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
       try {
         const res = await whatsapp.send(waId, { type: "text", body: text });
         const id = res?.messages?.[0]?.id ?? `catalyst.${crypto.randomUUID()}`;
-        db.logMessage({ id, waId, direction: "out", type: "text", body: text, status: "sent", sentBy: "teacher" });
+        db.logMessage({ id, waId, direction: "out", type: "text", body: text, status: "sent", sentBy: "owner" });
         return [200, { ok: true, id }];
       } catch (err) {
         log.error(`Catalyst reply to ${waId} failed:`, err.message);
         return [502, { error: err.message }];
       }
     }],
-    ["GET", /^\/classes$/, () => {
-      const classes = db.listClasses();
-      return [200, {
-        classes,
-        sessions: db.upcomingSessions(classes.map((c) => c.id), { days: 14, now: clock() }),
-        hidden: db.listAllClasses().filter((c) => !c.active),
-        subjects: db.listSubjects(),
-      }];
-    }],
-    // Classes: what the bot offers. Changes reach the bot on the next message (no restart).
-    ["POST", /^\/classes$/, (_, body) => [200, db.saveClass(null, body, { now: clock() })]],
-    ["POST", /^\/classes\/(\d+)$/, ([id], body) => [200, db.saveClass(Number(id), body, { now: clock() })]],
-    ["POST", /^\/classes\/(\d+)\/active$/, ([id], body) => [200, db.setClassActive(Number(id), Boolean(body.active))]],
-    ["POST", /^\/classes\/(\d+)\/sessions$/, ([id], body) => [200, db.setClassException(Number(id), body, { now: clock() })]],
-    ["POST", /^\/classes\/(\d+)\/sessions\/(\d{4}-\d{2}-\d{2})\/restore$/, ([id, date]) =>
-      [200, { ok: db.deleteClassException(Number(id), date) }]],
 
-    // Settings: the teacher's details, subjects and one-to-one, FAQs.
-    ["GET", /^\/settings$/, () => [200, {
-      tutor: db.getTutor(),
-      subjects: db.listSubjectsForSettings(),
-      availability: db.listAvailability(),
-      faqs: db.listFaqs().map(({ id, question, answer }) => ({ id, question, answer })),
-    }]],
-    ["POST", /^\/settings\/tutor$/, (_, body) => [200, db.saveTutor(body)]],
-    ["POST", /^\/subjects$/, (_, body) => [200, db.saveSubject(null, body)]],
-    ["POST", /^\/subjects\/(\d+)$/, ([id], body) => [200, db.saveSubject(Number(id), body)]],
-    ["POST", /^\/subjects\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteSubject(Number(id)) }]],
-    ["POST", /^\/availability$/, (_, body) => [200, db.addAvailability(body)]],
-    ["POST", /^\/availability\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteAvailability(Number(id)) }]],
+    // Products. Changes reach the bot on the next message (no restart).
+    ["GET", /^\/products$/, () => [200, db.listProducts()]],
+    ["POST", /^\/products$/, (_, body) => [200, db.saveProduct(null, body)]],
+    ["POST", /^\/products\/import$/, (_, body) => {
+      const r = db.importProducts(body.rows, { dryRun: Boolean(body.dry_run) });
+      return [r.ok ? 200 : 400, r.ok ? r : { ...r, error: `${r.errors.length} row${r.errors.length === 1 ? "" : "s"} need fixing; nothing was imported.` }];
+    }],
+    ["POST", /^\/products\/(\d+)$/, ([id], body) => [200, db.saveProduct(Number(id), body)]],
+    ["POST", /^\/products\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteProduct(Number(id)) }]],
+
+    // Bot settings: business details, reply languages and handover rules are saved together.
+    ["GET", /^\/settings$/, () => [200, settings()]],
+    ["POST", /^\/settings$/, (_, body) => {
+      db.saveSettings({ business: body.business, languages: body.languages, handover_rules: body.handover_rules });
+      return [200, settings()];
+    }],
+    // The bot's switch for everyone takes effect at once (no Save needed).
+    ["POST", /^\/settings\/bot$/, (_, body) => [200, db.setBotEnabled(Boolean(body.enabled))]],
     ["POST", /^\/faqs$/, (_, body) => [200, db.saveFaq(null, body)]],
     ["POST", /^\/faqs\/(\d+)$/, ([id], body) => [200, db.saveFaq(Number(id), body)]],
     ["POST", /^\/faqs\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteFaq(Number(id)) }]],
-    ["GET", /^\/payments$/, () => [200, {
-      slips: db.listSlipsAwaitingReview(),
-      unmatched: db.listUnmatchedSlips(new Date(Date.now() - UNMATCHED_DAYS * 86400000).toISOString().replace(/\.\d{3}Z$/, "Z")),
-      owed: db.listOwedByContact(),
-    }]],
-    ["POST", /^\/slips\/link$/, (_, body) => {
-      const r = db.linkSlip(String(body.media_id ?? ""), Array.isArray(body.payment_ids) ? body.payment_ids : []);
-      if (r.ok) return [200, { ok: true }];
-      const why = {
-        slip_not_found: "That photo or PDF isn't in the message log",
-        no_payments: "Pick at least one fee",
-        not_this_contact: "That fee belongs to a different contact",
-      }[r.reason] ?? "One of those fees isn't waiting for a slip any more. Refresh and try again";
-      return [r.reason === "slip_not_found" ? 404 : 409, { error: why }];
-    }],
-    ["POST", /^\/payments\/(\d+)\/approve$/, ([id]) => reviewed(db.approvePayment(Number(id), tutorName()))],
-    ["POST", /^\/payments\/(\d+)\/reject$/, ([id], body) => {
-      const reason = String(body.reason ?? "").trim();
-      if (!reason) return [400, { error: "Give a reason; the parent will need it" }];
-      return reviewed(db.rejectPayment(Number(id), tutorName(), reason));
-    }],
   ];
 
   // The language of their most recent message that shows one (skips "ok", emojis, photos).
@@ -184,7 +135,6 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
     const c = db.getContactByWaId(waId);
     return c ? [200, fn(c)] : [404, { error: "No such contact" }];
   }
-  const reviewed = (r) => (r.ok ? [200, r.payment] : [409, { error: "This payment has no slip waiting for review" }]);
 
   async function handleApi(req, res, subpath) {
     // Tells the web app whether to show the sign-in screen. Public on purpose.
@@ -194,7 +144,7 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
       if (!auth.startsWith("Bearer ") || !safeEqual(auth.slice(7), token)) return sendJson(res, 401, { error: "Wrong or missing access key" });
     }
 
-    // A photo or PDF someone sent (payment slips). Behind the same access check as everything else.
+    // A photo or PDF someone sent. Behind the same access check as everything else.
     const media = subpath.match(/^\/media\/([A-Za-z0-9_.-]{1,200})$/);
     if (media && req.method === "GET") return serveMedia(res, media[1]);
 
@@ -218,7 +168,7 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
   function serveMedia(res, mediaId) {
     const m = db.getMedia(mediaId);
     const file = m?.media_file ? mediaPath(m.media_file, mediaDir) : null;
-    if (!file) return sendJson(res, 404, { error: "This file wasn't saved (or was sent before slips were kept)." });
+    if (!file) return sendJson(res, 404, { error: "This file wasn't saved." });
     res.writeHead(200, {
       "Content-Type": m.media_mime || "application/octet-stream",
       "Content-Disposition": "inline",

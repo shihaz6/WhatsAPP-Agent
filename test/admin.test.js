@@ -6,12 +6,11 @@ const { test, beforeEach, after, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const db = require("../db");
-const { seed } = require("../db/seed");
+const { setupShop, REGULAR, PAUSED } = require("./fixtures");
 const { createAdmin } = require("../admin/api");
 
 const NOW = new Date("2026-11-10T06:00:00Z");
 const TOKEN = "test-token-123";
-const PERERA = "94770000202";
 const quietLog = { log() {}, warn() {}, error() {} };
 
 const sent = [];
@@ -30,7 +29,7 @@ function startServer(opts = {}) {
 
 let server, base;
 const call = async (method, path, { body, token = TOKEN } = {}) => {
-  const res = await fetch(`${base}${path}`, {
+  const res = await fetch(`${base}/admin/api${path}`, {
     method,
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
@@ -39,9 +38,10 @@ const call = async (method, path, { body, token = TOKEN } = {}) => {
   let data; try { data = JSON.parse(text); } catch { data = text; }
   return { status: res.status, data };
 };
+const post = (path, body = {}) => call("POST", path, { body });
 
 beforeEach(async () => {
-  seed({ now: NOW });
+  setupShop();
   sent.length = 0;
   if (!server) { server = await startServer(); base = `http://localhost:${server.address().port}`; }
 });
@@ -49,8 +49,8 @@ after(() => server?.close());
 
 describe("access", () => {
   test("no key or a wrong key is refused", async () => {
-    assert.equal((await call("GET", "/admin/api/overview", { token: null })).status, 401);
-    assert.equal((await call("GET", "/admin/api/overview", { token: "nope" })).status, 401);
+    assert.equal((await call("GET", "/overview", { token: null })).status, 401);
+    assert.equal((await call("GET", "/overview", { token: "nope" })).status, 401);
   });
 
   test("without ADMIN_TOKEN the dashboard is open and says no key is needed", async () => {
@@ -62,105 +62,141 @@ describe("access", () => {
   });
 
   test("with ADMIN_TOKEN the auth endpoint says a key is needed", async () => {
-    assert.deepEqual((await call("GET", "/admin/api/auth", { token: null })).data, { required: true });
+    assert.deepEqual((await call("GET", "/auth", { token: null })).data, { required: true });
   });
 
   test("unknown endpoints are 404 and paths can't escape the web build", async () => {
-    assert.equal((await call("GET", "/admin/api/nothing")).status, 404);
-    assert.equal((await call("GET", "/admin/..%2f..%2fserver.js")).status, 403);
+    assert.equal((await call("GET", "/nothing")).status, 404);
+    assert.equal((await call("GET", "/classes")).status, 404, "the tutor endpoints are gone");
+    const res = await fetch(`${base}/admin/..%2f..%2fserver.js`);
+    assert.equal(res.status, 403);
   });
 });
 
-describe("reading", () => {
-  test("overview has counts, this week's sessions, paused contacts and slips", async () => {
-    const { status, data } = await call("GET", "/admin/api/overview");
+describe("overview and conversations", () => {
+  test("overview has the business, counts and the chats waiting for the owner", async () => {
+    db.logMessage({ id: "o1", waId: REGULAR, direction: "in", type: "text", body: "hi", });
+    const { status, data } = await call("GET", "/overview");
     assert.equal(status, 200);
-    assert.equal(data.tutor.name, "Mr. Nuwan Jayasekara");
-    assert.equal(data.counts.contacts, 10);
-    assert.equal(data.counts.paused, 1);
-    assert.ok(data.counts.languages.some((l) => l.language === "si"));
-    assert.ok(data.sessions.some((s) => s.status === "cancelled"));
-    assert.deepEqual(data.paused.map((c) => c.wa_id), ["94770000204"]);
-    assert.equal(data.slips.length, data.counts.slips_waiting);
+    assert.equal(data.business.name, "Test Spice Shop");
+    assert.deepEqual([data.counts.contacts, data.counts.paused, data.counts.products, data.counts.out_of_stock], [3, 1, 4, 1]);
+    assert.deepEqual(data.paused.map((c) => c.wa_id), [PAUSED]);
   });
 
-  test("conversation list puts the latest chat first", async () => {
-    db.logMessage({ id: "a1", waId: PERERA, direction: "in", type: "text", body: "class eka kawadada?" });
-    const { data } = await call("GET", "/admin/api/conversations");
-    assert.equal(data[0].wa_id, PERERA);
-    assert.equal(data[0].last_body, "class eka kawadada?");
-    assert.equal(data.length, 10);
+  test("conversation list puts the latest chat first; one conversation has its messages", async () => {
+    db.logMessage({ id: "a1", waId: REGULAR, direction: "in", type: "text", body: "meeka kiyada?" });
+    const list = (await call("GET", "/conversations")).data;
+    assert.equal(list[0].wa_id, REGULAR);
+    assert.equal(list[0].last_body, "meeka kiyada?");
+    const one = await call("GET", `/conversations/${REGULAR}`);
+    assert.equal(one.data.contact.name, "Test Customer");
+    assert.equal(one.data.messages.at(-1).body, "meeka kiyada?");
+    assert.equal((await call("GET", "/conversations/94700000000")).status, 404);
   });
 
-  test("one conversation: contact, students with classes, payments, messages", async () => {
-    db.logMessage({ id: "a1", waId: PERERA, direction: "in", type: "text", body: "hi" });
-    const { status, data } = await call("GET", `/admin/api/conversations/${PERERA}`);
-    assert.equal(status, 200);
-    assert.equal(data.contact.name, "Mrs. S. Perera");
-    assert.deepEqual(data.students.map((s) => s.name), ["Dilini Perera", "Kasun Perera"]);
-    assert.ok(data.students[1].enrollments.length > 0);
-    assert.ok(data.payments.length > 0);
-    assert.equal(data.messages.at(-1).body, "hi");
-    assert.equal((await call("GET", "/admin/api/conversations/94700000000")).status, 404);
-  });
-
-  test("classes and payments", async () => {
-    const classes = (await call("GET", "/admin/api/classes")).data;
-    assert.equal(classes.classes.length, 7);
-    assert.ok(classes.sessions.length > 7, "two weeks of sessions");
-    const payments = (await call("GET", "/admin/api/payments")).data;
-    assert.ok(payments.owed.length > 0);
-    assert.ok(payments.owed.every((o) => o.total > 0));
-  });
-});
-
-describe("actions", () => {
-  test("pause, resume and language", async () => {
-    let r = await call("POST", `/admin/api/conversations/${PERERA}/pause`, { body: { reason: "Teacher is replying" } });
-    assert.equal(r.data.bot_paused, 1);
-    assert.equal(r.data.paused_reason, "Teacher is replying");
-    r = await call("POST", `/admin/api/conversations/${PERERA}/resume`);
+  test("take over, hand back and language", async () => {
+    let r = await post(`/conversations/${REGULAR}/pause`, { reason: "Owner is replying" });
+    assert.deepEqual([r.data.bot_paused, r.data.paused_reason], [1, "Owner is replying"]);
+    r = await post(`/conversations/${REGULAR}/resume`);
     assert.equal(r.data.bot_paused, 0);
-    r = await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "singlish" } });
-    assert.equal(r.data.language, "singlish");
-    assert.equal(r.data.language_auto, 0, "choosing a language fixes it");
-    assert.equal((await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "fr" } })).status, 400);
+    r = await post(`/conversations/${REGULAR}/language`, { language: "singlish" });
+    assert.deepEqual([r.data.language, r.data.language_auto], ["singlish", 0]);
+    assert.equal((await post(`/conversations/${REGULAR}/language`, { language: "fr" })).status, 400);
   });
 
   test("language back to auto: re-detected from their latest message that shows one", async () => {
-    assert.equal(db.getContactByWaId(PERERA).language_auto, 1, "auto by default");
-    await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "en" } });
-    db.logMessage({ id: "l1", waId: PERERA, direction: "in", type: "text", body: "class eppo irukku?" });
-    db.logMessage({ id: "l2", waId: PERERA, direction: "in", type: "text", body: "ok" });
-    const r = await call("POST", `/admin/api/conversations/${PERERA}/language`, { body: { language: "auto" } });
-    assert.equal(r.data.language_auto, 1);
-    assert.equal(r.data.language, "tanglish");
+    await post(`/conversations/${REGULAR}/language`, { language: "en" });
+    db.logMessage({ id: "l1", waId: REGULAR, direction: "in", type: "text", body: "idhu evlo irukku?" });
+    db.logMessage({ id: "l2", waId: REGULAR, direction: "in", type: "text", body: "ok" });
+    const r = await post(`/conversations/${REGULAR}/language`, { language: "auto" });
+    assert.deepEqual([r.data.language_auto, r.data.language], [1, "tanglish"]);
   });
 
-  test("reply as the teacher: sent on WhatsApp and logged in the chat", async () => {
-    const r = await call("POST", `/admin/api/conversations/${PERERA}/reply`, { body: { text: "Hello, this is the teacher." } });
+  test("reply as the owner: sent on WhatsApp and logged in the chat", async () => {
+    const r = await post(`/conversations/${REGULAR}/reply`, { text: "Hi, this is the owner." });
     assert.equal(r.status, 200);
-    assert.deepEqual(sent, [{ to: PERERA, type: "text", body: "Hello, this is the teacher." }]);
-    assert.equal(db.recentMessages(PERERA, 1)[0].body, "Hello, this is the teacher.");
-    assert.equal(db.recentMessages(PERERA, 1)[0].sent_by, "teacher");
-    assert.equal((await call("POST", `/admin/api/conversations/${PERERA}/reply`, { body: { text: "  " } })).status, 400);
+    assert.deepEqual(sent, [{ to: REGULAR, type: "text", body: "Hi, this is the owner." }]);
+    const [last] = db.recentMessages(REGULAR, 1);
+    assert.deepEqual([last.body, last.sent_by, last.status], ["Hi, this is the owner.", "owner", "sent"]);
+    assert.equal((await post(`/conversations/${REGULAR}/reply`, { text: "  " })).status, 400);
+  });
+});
+
+describe("products", () => {
+  test("list, add, edit and delete; mistakes come back as 400 with a message for the owner", async () => {
+    assert.equal((await call("GET", "/products")).data.length, 5, "hidden products are listed for the owner");
+    const added = await post("/products", { name: "Pepper", price: "Rs 750", stock: "", category: "Spices" });
+    assert.equal(added.status, 200);
+    assert.deepEqual([added.data.price, added.data.stock], [750, null]);
+    const edited = await post(`/products/${added.data.id}`, { name: "Black Pepper", price: 800, stock: 5, active: false });
+    assert.deepEqual([edited.data.name, edited.data.active], ["Black Pepper", 0]);
+    const bad = await post("/products", { name: "cinnamon sticks", price: 1 });
+    assert.equal(bad.status, 400);
+    assert.match(bad.data.error, /already exists/);
+    assert.equal((await post(`/products/${added.data.id}/delete`)).data.ok, true);
+    assert.equal((await call("GET", "/products")).data.length, 5);
   });
 
-  test("approve and reject slips; a reject needs a reason", async () => {
-    const slips = (await call("GET", "/admin/api/payments")).data.slips;
-    assert.ok(slips.length >= 1, "seed has a slip waiting");
-    const id = slips[0].id;
-    assert.equal((await call("POST", `/admin/api/payments/${id}/reject`, { body: {} })).status, 400);
-    const ok = await call("POST", `/admin/api/payments/${id}/approve`);
-    assert.equal(ok.data.status, "approved");
-    assert.equal(ok.data.reviewed_by, "Mr. Nuwan Jayasekara");
-    assert.equal((await call("POST", `/admin/api/payments/${id}/approve`)).status, 409, "already reviewed");
+  test("import: a dry run previews, the real run saves, and bad rows stop the whole import", async () => {
+    const rows = [{ name: "Green Tea", price: "1,600", stock: "10" }, { name: "black tea", price: 1500 }];
+    const preview = await post("/products/import", { rows, dry_run: true });
+    assert.deepEqual([preview.status, preview.data.created, preview.data.updated], [200, 1, 1]);
+    assert.equal(db.listProducts().length, 5);
+    assert.equal((await post("/products/import", { rows })).status, 200);
+    assert.equal(db.listProducts().length, 6);
+
+    const bad = await post("/products/import", { rows: [{ name: "X", price: "free" }, { name: "Y", price: 1 }] });
+    assert.equal(bad.status, 400);
+    assert.match(bad.data.error, /1 row need fixing; nothing was imported/);
+    assert.deepEqual(bad.data.errors.map((e) => e.row), [1]);
+    assert.equal(db.listProducts().length, 6);
+  });
+});
+
+describe("bot settings", () => {
+  test("GET has everything on the page", async () => {
+    const { data } = await call("GET", "/settings");
+    assert.equal(data.business.name, "Test Spice Shop");
+    assert.deepEqual(data.languages.map((l) => l.code), ["si", "ta", "en"]);
+    assert.equal(data.handover_rules.length, 3);
+    assert.equal(data.faqs.length, 2);
+  });
+
+  test("POST saves business details, languages and handover rules together", async () => {
+    const r = await post("/settings", {
+      business: { name: "Renamed Shop", opening_hours: "Daily 8–8", handover_number: "+94 71 123 4567" },
+      languages: { ta: false },
+      handover_rules: [{ key: "bulk_order", enabled: false }],
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.business.name, "Renamed Shop");
+    assert.equal(r.data.business.handover_number, "94711234567");
+    assert.equal(r.data.languages.find((l) => l.code === "ta").enabled, 0);
+    assert.equal(r.data.handover_rules.find((h) => h.key === "bulk_order").enabled, 0);
+  });
+
+  test("a mistake anywhere saves nothing", async () => {
+    const r = await post("/settings", { business: { name: "Renamed Shop" }, languages: { si: false, ta: false, en: false } });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /at least one reply language/);
+    assert.equal(db.getBusiness().name, "Test Spice Shop");
+  });
+
+  test("the bot switch for everyone works at once", async () => {
+    assert.equal((await post("/settings/bot", { enabled: false })).data.bot_enabled, 0);
+    assert.equal(db.getBusiness().bot_enabled, 0);
+    assert.equal((await post("/settings/bot", { enabled: true })).data.bot_enabled, 1);
+  });
+
+  test("FAQs: add, edit, delete", async () => {
+    const f = (await post("/faqs", { question: "Open on Sunday?", answer: "No." })).data;
+    assert.equal((await post(`/faqs/${f.id}`, { question: "Open on Sunday?", answer: "In December." })).data.answer, "In December.");
+    assert.equal((await post(`/faqs/${f.id}/delete`)).data.ok, true);
+    assert.equal((await post("/faqs", { question: "Q?" })).status, 400);
   });
 
   test("bad JSON is a 400", async () => {
-    const res = await fetch(`${base}/admin/api/conversations/${PERERA}/pause`, {
-      method: "POST", headers: { Authorization: `Bearer ${TOKEN}` }, body: "{oops",
-    });
+    const res = await fetch(`${base}/admin/api/settings`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` }, body: "{oops" });
     assert.equal(res.status, 400);
   });
 });

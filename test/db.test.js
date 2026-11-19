@@ -1,350 +1,232 @@
-// Data model tests. Run: npm test
-// Each test starts from a freshly seeded in-memory database with a fixed "today"
-// (Tue 2026-11-10, 11:30 in Colombo), so dates such as the cancelled Nov 14 class are stable.
+// Database tests (db/index.js, db/schema.sql) on an in-memory database. Run: npm test
 
 process.env.DB_PATH = ":memory:";
 
 const { test, beforeEach, describe } = require("node:test");
 const assert = require("node:assert/strict");
-const path = require("node:path");
-const os = require("node:os");
-const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
 const db = require("../db");
-const { seed } = require("../db/seed");
+const { setupShop, REGULAR, PAUSED } = require("./fixtures");
 
-const NOW = new Date("2026-11-10T06:00:00Z");
-const REVIEWER = "Mr. Nuwan Jayasekara";
-const PERERA = "94770000202"; // parent with two children
-const contactId = (waId) => db.getContactByWaId(waId).id;
-const countStudents = () => db.open().prepare("SELECT COUNT(*) AS n FROM students").get().n;
-const payment = (studentId, classId, month = "2026-11") =>
-  db.listPayments(studentId).find((p) => p.class_id === classId && p.month === month);
+const rejects = (fn, pattern) => assert.throws(fn, (err) => err.status === 400 && pattern.test(err.message));
 
-let seeded;
-beforeEach(() => { seeded = seed({ now: NOW }); });
+describe("a new database", () => {
+  beforeEach(() => db.resetSchema());
 
-describe("catalog", () => {
-  test("tutor, subjects and classes with seat counts", () => {
-    assert.equal(db.getTutor().name, "Mr. Nuwan Jayasekara");
-    assert.equal(db.listSubjects().length, 3);
-    assert.equal(db.listClasses().length, 7);
-    assert.equal(db.listClasses({ subjectId: 2 }).length, 2);
-    assert.equal(db.getClass(1).enrolled_count, 3);
-    assert.equal(db.getClass(7).seats_left, 0);
-    assert.equal(db.getClass(7).day_name, "Friday");
+  test("starts empty, with one business row, all reply languages on and the default handover rules", () => {
+    const b = db.getBusiness();
+    assert.equal(b.name, "");
+    assert.equal(b.bot_enabled, 1);
+    assert.equal(b.currency, "LKR");
+    assert.deepEqual(db.listReplyLanguages(), [{ code: "si", enabled: 1 }, { code: "ta", enabled: 1 }, { code: "en", enabled: 1 }]);
+    assert.deepEqual(db.listHandoverRules().map((r) => [r.key, r.enabled]),
+      [["asks_for_person", 1], ["bot_unsure", 1], ["bulk_order", 1]]);
+    assert.deepEqual([db.listProducts(), db.listFaqs(), db.listConversations()], [[], [], []]);
+  });
+
+  test("applying the schema again keeps the data (it runs on every start)", () => {
+    db.saveBusiness({ name: "Kept" });
+    db.saveHandoverRules([{ key: "bulk_order", enabled: false }]);
+    const schema = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "db", "schema.sql"), "utf8");
+    db.open().exec(schema);
+    assert.equal(db.getBusiness().name, "Kept");
+    assert.equal(db.listHandoverRules().find((r) => r.key === "bulk_order").enabled, 0);
+    assert.equal(db.listHandoverRules().length, 3);
   });
 });
 
-describe("contacts and students", () => {
-  test("an unknown number gets a contact, not a student", () => {
-    const before = countStudents();
-    const c = db.ensureContact("94779999999");
-    assert.equal(c.wa_id, "94779999999");
-    assert.equal(c.language, "en");
-    assert.equal(c.bot_paused, 0);
-    assert.equal(db.ensureContact("94779999999").id, c.id, "second message reuses the contact");
-    assert.deepEqual(db.listStudents(c.id), []);
-    assert.equal(countStudents(), before);
+describe("business details", () => {
+  beforeEach(setupShop);
+
+  test("saves only the fields given; the name is required", () => {
+    db.saveBusiness({ opening_hours: "Every day 8–8" });
+    const b = db.getBusiness();
+    assert.equal(b.opening_hours, "Every day 8–8");
+    assert.equal(b.name, "Test Spice Shop");
+    assert.equal(b.location, "1 Test Road, Colombo 03");
+    rejects(() => db.saveBusiness({ name: "  " }), /name is required/);
+    db.saveBusiness({ delivery_info: "" });
+    assert.equal(db.getBusiness().delivery_info, null, "an emptied field is cleared");
   });
 
-  test("seeded new contact has no students", () => {
-    assert.deepEqual(db.listStudents(contactId("94770000109")), []);
+  test("the handover number is stored as digits with the country code", () => {
+    assert.equal(db.saveBusiness({ handover_number: "+94 77 123 4567" }).handover_number, "94771234567");
+    assert.equal(db.saveBusiness({ handover_number: "" }).handover_number, null);
+    rejects(() => db.saveBusiness({ handover_number: "12345" }), /country code/);
   });
 
-  test("one parent contact has two children", () => {
-    const id = contactId(PERERA);
-    assert.equal(db.getContact(id).kind, "parent");
-    assert.deepEqual(db.listStudents(id).map((s) => s.name), ["Dilini Perera", "Kasun Perera"]);
-    const kids = new Set(db.listPaymentsForContact(id).map((p) => p.student_name));
-    assert.deepEqual([...kids].sort(), ["Dilini Perera", "Kasun Perera"]);
+  test("currency must be a 3-letter code", () => {
+    assert.equal(db.saveBusiness({ currency: "usd" }).currency, "USD");
+    rejects(() => db.saveBusiness({ currency: "rupees" }), /3-letter/);
   });
 
-  test("an adult student is their own contact", () => {
-    const id = contactId("94770000103");
-    assert.equal(db.getContact(id).kind, "student");
-    assert.deepEqual(db.listStudents(id).map((s) => s.name), ["Kavindu Silva"]);
-  });
-
-  test("language preference and bot pause live on the contact", () => {
-    const id = db.ensureContact("94779999999").id;
-    assert.equal(db.updateContact(id, { language: "ta", name: "Mr. T" }).language, "ta");
-    const paused = db.setBotPaused(id, true, "Asked to speak to the tutor");
-    assert.equal(paused.bot_paused, 1);
-    assert.equal(paused.paused_reason, "Asked to speak to the tutor");
-    assert.ok(paused.paused_at);
-    const resumed = db.setBotPaused(id, false);
-    assert.equal(resumed.bot_paused, 0);
-    assert.equal(resumed.paused_at, null);
-    assert.equal(db.getContactByWaId("94770000204").bot_paused, 1, "seed has a paused contact");
-    assert.equal(db.getContactByWaId(PERERA).language, "si");
-    assert.throws(() => db.updateContact(id, { language: "fr" }), /CHECK/);
-    for (const language of db.LANGUAGES) assert.equal(db.updateContact(id, { language }).language, language);
-  });
-
-  test("an old database whose contacts only allowed en/si/ta is migrated, keeping its data", () => {
-    const { DatabaseSync } = require("node:sqlite");
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tutor-")), "old.db");
-    const old = new DatabaseSync(file);
-    old.exec(fs.readFileSync(path.join(__dirname, "..", "db", "schema.sql"), "utf8")
-      .replace("'en', 'si', 'ta', 'singlish', 'tanglish'", "'en', 'si', 'ta'"));
-    old.exec("INSERT INTO contacts (id, wa_id, name, language) VALUES (1, '94771111111', 'Old Parent', 'si')");
-    old.exec("INSERT INTO students (contact_id, name) VALUES (1, 'Old Kid')");
-    assert.throws(() => old.exec("UPDATE contacts SET language = 'singlish'"), /CHECK/);
-    old.close();
-
-    db.close();
-    try {
-      db.open(file);
-      const c = db.getContactByWaId("94771111111");
-      assert.equal(c.language, "si");
-      assert.equal(db.updateContact(c.id, { language: "singlish" }).language, "singlish");
-      assert.deepEqual(db.listStudents(c.id).map((s) => s.name), ["Old Kid"]);
-      const fk = db.open().prepare("SELECT sql FROM sqlite_master WHERE name = 'students'").get().sql;
-      assert.match(fk, /REFERENCES contacts\(id\)/, "students still point at contacts");
-      assert.deepEqual(db.open().prepare("PRAGMA foreign_key_check").all(), []);
-    } finally {
-      db.close();
-      db.open(":memory:");
-    }
+  test("the bot can be switched off for everyone", () => {
+    assert.equal(db.setBotEnabled(false).bot_enabled, 0);
+    assert.equal(db.setBotEnabled(true).bot_enabled, 1);
   });
 });
 
-describe("enrollment creates students only on success", () => {
-  test("a parent enrols a third child: new student under the same contact", () => {
-    const id = contactId(PERERA);
-    const r = db.enroll({ contactId: id, name: "Nimesh Perera", grade: "Grade 10" }, 6);
-    assert.equal(r.ok, true);
-    assert.equal(r.student.contact_id, id);
-    assert.equal(r.enrollment.status, "pending");
-    assert.equal(db.listStudents(id).length, 3);
+describe("reply languages and handover rules", () => {
+  beforeEach(setupShop);
+
+  test("languages are switched on and off; at least one stays on", () => {
+    db.saveReplyLanguages({ ta: false });
+    assert.deepEqual(db.listReplyLanguages().map((l) => l.enabled), [1, 0, 1]);
+    rejects(() => db.saveReplyLanguages({ si: false, ta: false, en: false }), /at least one/);
+    assert.deepEqual(db.listReplyLanguages().map((l) => l.enabled), [1, 0, 1], "a refused save changes nothing");
   });
 
-  test("same child's name (any case) reuses the student", () => {
-    const id = contactId(PERERA);
-    const r = db.enroll({ contactId: id, name: "kasun perera" }, 6);
-    assert.equal(r.reason, "already_enrolled");
-    assert.equal(db.listStudents(id).length, 2);
+  test("the reply language: theirs if allowed (Singlish counts as Sinhala), else English, else the first one on", () => {
+    assert.equal(db.replyLanguageFor("singlish"), "singlish");
+    db.saveReplyLanguages({ si: false });
+    assert.equal(db.replyLanguageFor("singlish"), "en");
+    assert.equal(db.replyLanguageFor("si"), "en");
+    assert.equal(db.replyLanguageFor("tanglish"), "tanglish");
+    db.saveReplyLanguages({ en: false, si: true });
+    assert.equal(db.replyLanguageFor("en"), "si");
   });
 
-  test("a refused enrolment does not create a student", () => {
-    const c = db.ensureContact("94779999999");
-    const before = countStudents();
-    assert.equal(db.enroll({ contactId: c.id, name: "New Kid" }, 7).reason, "class_full");
-    assert.equal(db.enroll({ contactId: c.id, name: "New Kid" }, 999).reason, "class_not_found");
-    assert.equal(countStudents(), before);
+  test("handover rules are switched on and off by key", () => {
+    db.saveHandoverRules([{ key: "bulk_order", enabled: false }]);
+    assert.equal(db.listHandoverRules().find((r) => r.key === "bulk_order").enabled, 0);
+    rejects(() => db.saveHandoverRules([{ key: "nope", enabled: true }]), /Unknown handover rule/);
   });
 
-  test("duplicate, re-enrol after cancel, bad refs", () => {
-    assert.equal(db.enroll(1, 1).reason, "already_enrolled");
-    assert.equal(db.enroll(5, 4).ok, true, "student 5 had cancelled class 4");
-    assert.throws(() => db.enroll({ contactId: 1 }, 1), /name/);
-    assert.throws(() => db.enroll(9999, 1), /not found/);
-    assert.equal(db.listEnrollments(1).length, 3);
+  test("the settings page is saved all or nothing", () => {
+    // The handover rule is saved last and is the one that fails: the earlier parts must roll back.
+    rejects(() => db.saveSettings({
+      business: { opening_hours: "changed" },
+      languages: { ta: false },
+      handover_rules: [{ key: "nope", enabled: false }],
+    }), /Unknown handover rule/);
+    assert.equal(db.getBusiness().opening_hours, "Mon–Sat, 9:00 AM–7:00 PM");
+    assert.equal(db.listReplyLanguages().find((l) => l.code === "ta").enabled, 1);
+
+    const saved = db.saveSettings({ business: { opening_hours: "changed" }, languages: { ta: false }, handover_rules: [{ key: "bulk_order", enabled: false }] });
+    assert.equal(saved.business.opening_hours, "changed");
+    assert.equal(saved.languages.find((l) => l.code === "ta").enabled, 0);
+    assert.equal(saved.handover_rules.find((r) => r.key === "bulk_order").enabled, 0);
   });
 });
 
-describe("schedule", () => {
-  test("upcoming sessions apply the cancellation and reschedule", () => {
-    const s = db.upcomingSessions([1, 3], { days: 14, now: NOW });
-    const line = (x) => `${x.date} ${x.time} ${x.status} ${x.class_id}`;
-    assert.deepEqual(s.map(line), [
-      "2026-11-13 19:00 rescheduled 3",
-      "2026-11-14 08:00 cancelled 1",
-      "2026-11-18 18:00 scheduled 3",
-      "2026-11-21 08:00 scheduled 1",
+describe("products", () => {
+  beforeEach(setupShop);
+
+  test("listed by category then name; hidden ones only when asked", () => {
+    // Pantry, Spices (Cinnamon, Old Hidden), Sweeteners, Tea
+    assert.deepEqual(db.listProducts().map((p) => p.name),
+      ["Coconut Oil", "Cinnamon Sticks", "Old Hidden Item", "Kithul Treacle", "Black Tea"]);
+    assert.ok(!db.listProducts({ activeOnly: true }).some((p) => p.name === "Old Hidden Item"));
+  });
+
+  test("prices accept spreadsheet formats but must be whole numbers; stock is optional", () => {
+    const p = db.saveProduct(null, { name: "Pepper", price: "Rs 1,250", stock: "" });
+    assert.equal(p.price, 1250);
+    assert.equal(p.stock, null);
+    assert.equal(db.saveProduct(null, { name: "Cloves", price: "LKR 900.00", stock: "7" }).stock, 7);
+    rejects(() => db.saveProduct(null, { name: "Bad", price: "12.50" }), /whole number/);
+    rejects(() => db.saveProduct(null, { name: "Bad", price: -1 }), /whole number/);
+    rejects(() => db.saveProduct(null, { name: "Bad", price: 10, stock: "lots" }), /stock of Bad/);
+    rejects(() => db.saveProduct(null, { name: "", price: 10 }), /needs a name/);
+  });
+
+  test("names are unique in any case; update and delete", () => {
+    rejects(() => db.saveProduct(null, { name: "cinnamon sticks", price: 1 }), /already exists/);
+    const tea = db.listProducts().find((p) => p.name === "Black Tea");
+    const updated = db.saveProduct(tea.id, { name: "Black Tea", price: 1500, stock: 10 });
+    assert.deepEqual([updated.price, updated.stock], [1500, 10]);
+    assert.equal(db.deleteProduct(tea.id), true);
+    assert.equal(db.getProduct(tea.id), null);
+    rejects(() => db.saveProduct(tea.id, { name: "Gone", price: 1 }), /no longer exists/);
+  });
+
+  test("search matches name, category and description; hidden products never show", () => {
+    assert.deepEqual(db.searchProducts("cinnamon").map((p) => p.name), ["Cinnamon Sticks"]);
+    assert.deepEqual(db.searchProducts("tea").map((p) => p.name), ["Black Tea"]);
+    assert.deepEqual(db.searchProducts("500ml").map((p) => p.name), ["Coconut Oil"]);
+    assert.ok(!db.searchProducts("spices").some((p) => p.name === "Old Hidden Item"));
+    assert.equal(db.searchProducts("").length, 4, "empty = everything on sale");
+    assert.deepEqual(db.searchProducts("caviar"), []);
+  });
+
+  test("import: a dry run counts new and updated products without saving", () => {
+    const rows = [
+      { name: "black tea", price: "1,500", stock: "40", category: "Tea" },
+      { name: "Green Tea", price: 1600 },
+    ];
+    const r = db.importProducts(rows, { dryRun: true });
+    assert.deepEqual([r.ok, r.created, r.updated, r.errors], [true, 1, 1, []]);
+    assert.equal(db.listProducts().length, 5, "nothing saved");
+    const real = db.importProducts(rows);
+    assert.equal(real.ok, true);
+    assert.equal(db.listProducts().length, 6);
+    assert.equal(db.searchProducts("black tea")[0].price, 1500);
+  });
+
+  test("import: an update changes only the columns in the file and keeps the product's name", () => {
+    db.importProducts([{ name: "black tea", price: "1,500" }]);
+    const tea = db.listProducts().find((p) => p.name.toLowerCase() === "black tea");
+    assert.equal(tea.name, "Black Tea", "name kept as the owner wrote it");
+    assert.equal(tea.price, 1500);
+    assert.deepEqual([tea.description, tea.category, tea.stock], ["200g loose leaf", "Tea", null], "missing columns untouched");
+    db.importProducts([{ name: "Black Tea", price: 1500, description: "" }]);
+    assert.equal(db.listProducts().find((p) => p.name === "Black Tea").description, null, "an empty cell in a column that exists clears it");
+  });
+
+  test("import: any bad row means nothing is saved, and every problem is listed by row", () => {
+    const r = db.importProducts([
+      { name: "Good", price: 100 },
+      { name: "", price: 100 },
+      { name: "Pricey", price: "a lot" },
+      { name: "good", price: 200 },
     ]);
-    assert.equal(seeded.cancelledDate, "2026-11-14");
-  });
-});
-
-describe("trials", () => {
-  test("cannot book a trial on the cancelled Nov 14 session", () => {
-    const c = db.ensureContact("94779999999");
-    const before = countStudents();
-    const r = db.bookTrial({ contactId: c.id, name: "Trial Kid" }, 1, "2026-11-14", { now: NOW });
     assert.equal(r.ok, false);
-    assert.equal(r.reason, "session_cancelled");
-    assert.match(r.note, /Hall unavailable/);
-    assert.equal(countStudents(), before, "no student created");
-  });
-
-  test("a trial on another class that Saturday works", () => {
-    const c = db.ensureContact("94779999999");
-    const r = db.bookTrial({ contactId: c.id, name: "Trial Kid" }, 4, "2026-11-14", { now: NOW });
-    assert.equal(r.ok, true);
-    assert.equal(r.trial.status, "booked");
-    assert.equal(r.trial.time, "13:30");
-    assert.equal(r.student.contact_id, c.id);
-    assert.equal(db.bookTrial(r.student.id, 4, "2026-11-21", { now: NOW }).reason, "trial_exists");
-    assert.ok(db.setTrialStatus(r.trial.id, "cancelled"));
-    assert.equal(db.bookTrial(r.student.id, 4, "2026-11-21", { now: NOW }).ok, true, "rebook after cancelling");
-  });
-
-  test("rescheduled session: old date refused with the new date, new date accepted", () => {
-    const c = db.ensureContact("94779999999");
-    const old = db.bookTrial({ contactId: c.id, name: "Trial Kid" }, 3, "2026-11-11", { now: NOW });
-    assert.equal(old.reason, "session_rescheduled");
-    assert.deepEqual(old.moved_to, { date: "2026-11-13", time: "19:00" });
-    const moved = db.bookTrial({ contactId: c.id, name: "Trial Kid" }, 3, "2026-11-13", { now: NOW });
-    assert.equal(moved.ok, true);
-    assert.equal(moved.trial.time, "19:00");
-  });
-
-  test("other refusals", () => {
-    const ref = { contactId: db.ensureContact("94779999999").id, name: "Trial Kid" };
-    assert.equal(db.bookTrial(ref, 1, "2026-11-15", { now: NOW }).reason, "no_session_on_date", "a Sunday");
-    assert.equal(db.bookTrial(ref, 1, "2026-11-07", { now: NOW }).reason, "in_past");
-    assert.equal(db.bookTrial(ref, 1, "2026-13-40", { now: NOW }).reason, "invalid_date");
-    assert.equal(db.bookTrial(ref, 7, "2026-11-13", { now: NOW }).reason, "class_full");
-    assert.equal(db.bookTrial(1, 1, "2026-11-21", { now: NOW }).reason, "already_enrolled");
+    assert.deepEqual(r.errors.map((e) => e.row), [2, 3, 4]);
+    assert.match(r.errors[2].error, /in the file twice/);
+    assert.equal(db.listProducts().length, 5);
+    rejects(() => db.importProducts([]), /no products/);
   });
 });
 
-describe("payments and slips", () => {
-  test("full path: due -> slip received -> approved", () => {
-    const p = payment(1, 4); // Sahan, Physics theory, November
-    assert.equal(p.status, "due");
-    const dueBefore = db.amountDue(1);
+describe("FAQs, contacts and messages", () => {
+  beforeEach(setupShop);
 
-    assert.deepEqual(db.submitSlip(p.id, { mediaId: "media-123", reference: "TRX999" }), { ok: true });
-    const received = db.getPayment(p.id);
-    assert.equal(received.status, "slip_received");
-    assert.equal(received.slip_media_id, "media-123");
-    assert.equal(received.slip_reference, "TRX999");
-    assert.ok(received.slip_received_at);
-    assert.equal(db.amountDue(1), dueBefore - p.amount, "a slip under review is not counted as owed");
-    assert.ok(db.listSlipsAwaitingReview().some((x) => x.id === p.id));
-
-    const r = db.approvePayment(p.id, REVIEWER);
-    assert.equal(r.ok, true);
-    assert.equal(r.payment.status, "approved");
-    assert.equal(r.payment.reviewed_by, REVIEWER);
-    assert.ok(r.payment.reviewed_at);
-    assert.ok(!db.listSlipsAwaitingReview().some((x) => x.id === p.id));
-    assert.equal(db.approvePayment(p.id, REVIEWER).reason, "no_slip_to_review", "can't approve twice");
+  test("FAQs: add, edit, delete; both fields required", () => {
+    const f = db.saveFaq(null, { question: "Open on Sunday?", answer: "No." });
+    assert.equal(db.saveFaq(f.id, { question: "Open on Sunday?", answer: "Only in December." }).answer, "Only in December.");
+    assert.equal(db.deleteFaq(f.id), true);
+    rejects(() => db.saveFaq(null, { question: "Q", answer: "" }), /question and an answer/);
+    assert.equal(db.listFaqs().length, 2);
   });
 
-  test("rejected slip: owed again, reason kept, then a new slip is approved", () => {
-    const p = payment(5, 1); // Rizwan, CM theory, November
-    db.submitSlip(p.id, { mediaId: "blurry-photo" });
-    assert.throws(() => db.rejectPayment(p.id, REVIEWER), /reason/);
-
-    const r = db.rejectPayment(p.id, REVIEWER, "Photo is unreadable");
-    assert.equal(r.payment.status, "rejected");
-    assert.equal(r.payment.review_note, "Photo is unreadable");
-    assert.equal(r.payment.reviewed_by, REVIEWER);
-    assert.equal(r.payment.slip_media_id, "blurry-photo", "rejected slip stays on record");
-    assert.equal(db.amountDue(5), p.amount, "rejected counts as owed again");
-
-    assert.equal(db.submitSlip(p.id, { mediaId: "clear-photo" }).ok, true);
-    const resent = db.getPayment(p.id);
-    assert.equal(resent.status, "slip_received");
-    assert.equal(resent.slip_media_id, "clear-photo");
-    assert.equal(resent.reviewed_by, null);
-    assert.equal(resent.review_note, null);
-    assert.equal(db.approvePayment(p.id, REVIEWER).payment.status, "approved");
+  test("an unknown number gets a contact; name, language and pause live on it", () => {
+    const c = db.ensureContact("94771112222");
+    assert.equal(c.language, "en");
+    assert.equal(db.ensureContact("94771112222").id, c.id, "same contact on the next message");
+    assert.equal(db.updateContact(c.id, { name: "Nimal", language: "singlish" }).language, "singlish");
+    const paused = db.setBotPaused(c.id, true, "Asked for a person");
+    assert.deepEqual([paused.bot_paused, paused.paused_reason], [1, "Asked for a person"]);
+    assert.ok(paused.paused_at);
+    const resumed = db.setBotPaused(c.id, false);
+    assert.deepEqual([resumed.bot_paused, resumed.paused_reason, resumed.paused_at], [0, null, null]);
   });
 
-  test("invalid transitions are refused", () => {
-    const due = payment(1, 4);
-    const approved = payment(1, 1);
-    assert.equal(approved.status, "approved");
-    assert.equal(db.approvePayment(due.id, REVIEWER).reason, "no_slip_to_review");
-    assert.equal(db.submitSlip(approved.id, { mediaId: "m" }).reason, "not_awaiting_slip:approved");
-    assert.throws(() => db.submitSlip(due.id, {}), /mediaId/);
-    // one slip for several payments is all-or-nothing
-    assert.equal(db.submitSlip([due.id, approved.id], { mediaId: "m" }).ok, false);
-    assert.equal(db.getPayment(due.id).status, "due");
-    // the schema itself refuses an approval with no reviewer
-    assert.throws(() => db.open().prepare("UPDATE payments SET status = 'approved' WHERE id = ?").run(due.id), /CHECK/);
+  test("the message log drops webhook retries; counts cover the dashboard", () => {
+    assert.equal(db.logMessage({ id: "w1", waId: REGULAR, direction: "in", type: "text", body: "hi" }), true);
+    assert.equal(db.logMessage({ id: "w1", waId: REGULAR, direction: "in", type: "text", body: "hi" }), false);
+    db.logMessage({ id: "w2", waId: REGULAR, direction: "out", type: "text", body: "Hello", status: "sent", sentBy: "bot" });
+    db.logMessage({ id: "w3", waId: REGULAR, direction: "out", type: "text", body: "Lost", status: "failed", sentBy: "bot", agentError: "boom" });
+    const counts = db.dashboardCounts("2000-01-01T00:00:00Z");
+    assert.deepEqual(
+      [counts.contacts, counts.paused, counts.messages_in_24h, counts.messages_out_24h, counts.undelivered_24h, counts.agent_errors_24h, counts.products, counts.out_of_stock, counts.faqs],
+      [3, 1, 1, 1, 1, 1, 4, 1, 2],
+    );
+    const [first] = db.listConversations();
+    assert.equal(first.wa_id, REGULAR, "latest chat first");
+    assert.equal(first.last_body, "Lost");
+    assert.ok(db.listConversations().some((c) => c.wa_id === PAUSED && c.bot_paused === 1));
   });
 
-  test("one slip covers both of a parent's children", () => {
-    const id = contactId(PERERA);
-    const waiting = db.listPaymentsForContact(id, { status: "slip_received" });
-    assert.deepEqual([...new Set(waiting.map((p) => p.student_name))].sort(), ["Dilini Perera", "Kasun Perera"]);
-    assert.equal(new Set(waiting.map((p) => p.slip_media_id)).size, 1);
-  });
-
-  test("seeded rejected slip and monthly fee generation", () => {
-    const rejected = payment(4, 5, "2026-10");
-    assert.equal(rejected.status, "rejected");
-    assert.match(rejected.review_note, /2,000/);
-    assert.equal(db.generateMonthlyFees("2026-11"), 0, "idempotent");
-    assert.ok(db.waivePayment(payment(1, 4).id, REVIEWER, "Scholarship"));
-  });
-});
-
-describe("one-to-one bookings", () => {
-  test("booking for a new number creates the student then", () => {
-    const id = contactId("94770000109");
-    const r = db.createBooking({ student: { contactId: id, name: "Pasindu" }, subjectId: 1,
-                                 startsAt: "2099-01-05 17:00", topic: "Vectors" });
-    assert.equal(r.ok, true);
-    assert.equal(r.booking.status, "requested");
-    assert.equal(r.booking.subject_name, "Combined Mathematics");
-    assert.deepEqual(db.listStudents(id).map((s) => s.name), ["Pasindu"]);
-    assert.equal(db.createBooking({ student: r.student.id, subjectId: 99, startsAt: "2099-01-05 17:00" }).reason,
-      "subject_not_found");
-  });
-
-  test("upcoming bookings, rates and availability", () => {
-    assert.equal(db.listBookings(3, { now: NOW }).length, 1);
-    assert.equal(db.listBookings(7, { now: NOW }).length, 0, "only a past, completed one");
-    assert.equal(db.getIndividualRate(2), 3000);
-    assert.equal(db.listAvailability()[0].day_name, "Monday");
-  });
-});
-
-describe("materials, FAQs, conversations, message log", () => {
-  test("materials are scoped to active enrollments", () => {
-    const titles = db.listMaterials(6).map((m) => m.title);
-    assert.ok(titles.includes("Grade 10 – Algebra worksheet"));
-    assert.ok(titles.includes("2027 class timetable"));
-    assert.ok(!titles.some((t) => t.includes("Physics")));
-  });
-
-  test("FAQ matching", () => {
-    assert.equal(db.findFaqs("how much is the fee?")[0].question, "How much are the class fees?");
-    assert.equal(db.findFaqs("can I try a class?")[0].question, "Can I try a class first?");
-    assert.equal(db.findFaqs("xyz").length, 0);
-  });
-
-  test("conversation state is per contact", () => {
-    const id = contactId(PERERA);
-    assert.equal(db.getConversation(id).state, "idle");
-    db.setConversation(id, "enrolling", { classId: 3 });
-    db.setConversation(id, "enrolling", { classId: 4, studentId: 9 });
-    assert.deepEqual(db.getConversation(id).context, { classId: 4, studentId: 9 });
-  });
-
-  test("message log deduplicates by WhatsApp id", () => {
-    const m = { id: "wamid.X", waId: PERERA, direction: "in", type: "text", body: "hi" };
-    assert.equal(db.logMessage(m), true);
-    assert.equal(db.logMessage(m), false);
-  });
-});
-
-describe("seed guard", () => {
-  test("seed() refuses when NODE_ENV is production", () => {
-    const old = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
-    try {
-      assert.throws(() => seed({ now: NOW }), /production/);
-    } finally {
-      if (old === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = old;
-    }
-    assert.equal(db.listClasses().length, 7, "existing data untouched");
-  });
-
-  test("npm run seed exits with an error in production and doesn't create a database", () => {
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "seed-guard-")), "tutor.db");
-    const r = spawnSync(process.execPath, [path.join(__dirname, "..", "db", "seed.js")], {
-      env: { ...process.env, NODE_ENV: "production", DB_PATH: file }, encoding: "utf8",
-    });
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /Refusing to seed/);
-    assert.equal(fs.existsSync(file), false);
+  test("only the owner or the bot can be the sender of an outgoing message", () => {
+    assert.throws(() => db.logMessage({ id: "x", waId: REGULAR, direction: "out", type: "text", body: "x", sentBy: "teacher" }), /CHECK/);
   });
 });

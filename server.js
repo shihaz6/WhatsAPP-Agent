@@ -40,8 +40,8 @@ if (!whatsapp.isConfigured()) {
   console.warn("Warning: WHATSAPP_TOKEN or PHONE_NUMBER_ID is not set; replies are disabled.");
 }
 db.open();
-if (!db.getTutor()) {
-  console.warn("Warning: the database has no tutor yet. Run `npm run seed` for demo data.");
+if (!db.getBusiness()?.name) {
+  console.warn("Note: no business details yet. Add them in the dashboard under Bot settings (and products under Products).");
 }
 const llm = createGroqClient();
 if (!llm.isConfigured()) {

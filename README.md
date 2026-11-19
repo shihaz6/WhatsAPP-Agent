@@ -18,21 +18,17 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 
 - [x] Send replies through the Graph API (`POST /{phone-number-id}/messages`): `whatsapp.js`
   - Marks incoming messages as read, replies quoting the original, ignores duplicate deliveries
-- [x] **Phase 2a – Data model** (`db/`), on Node's built-in SQLite:
-  - **Contacts vs students:** a contact is a WhatsApp number (parent or adult student) and is created on the first message; it holds the preferred language (`en`, `si`/`ta` in their own script, or `singlish`/`tanglish` in English letters) and a `bot_paused` flag for human handoff. Students belong to a contact (a parent can have several) and are created only when someone enrols, books a trial or books a one-to-one session.
-  - Tutor, subjects, weekly classes with cancellations/reschedules, enrollments, availability, materials, FAQs, conversation state and a message log
-  - **Payments** go `due → slip_received → approved`, or `→ rejected` (with reason) and back to `slip_received` when a new slip arrives; the slip image's media id, reviewer and review time are stored. One slip can cover several payments.
-  - **Trials:** one session of a group class on a specific date, refused for cancelled, moved, past or full sessions
-  - `npm run seed` loads demo data (refuses when `NODE_ENV=production`); `npm test` runs the data-model tests
-- [ ] **Phase 2b – AI agent** (`bot/`, `ai/`): a Groq model runs the whole conversation and reaches the data only through tools scoped to the sender. Built and phone-tested one step at a time:
-  - [x] 1. Wiring: each message is logged (duplicates dropped), gets a contact, is skipped if the contact is paused; one message per person at a time. `npm run admin` shows, pauses, resumes or resets a contact.
-  - [x] 2. Groq client, agent loop with chat history, and read-only tools (classes with next sessions, schedule, FAQs, one-to-one info, my family, my fees, my materials)
-  - [ ] 3. Language handling and interactive replies (buttons, lists)
-    - [x] Language: replies mirror the language *and script* of the latest message: English, Sinhala, Tamil, Singlish or Tanglish (`bot/language.js`). The detected language is saved on the contact, so "ok"/"thanks" keep it, and the fallback message is sent in it. `npm run admin -- lang <wa_id> <language>` sets it by hand.
-    - [ ] Interactive replies (buttons, lists)
-  - [ ] 4. Write tools with confirmation: trials, enrolment, one-to-one bookings, "which child?"
-  - [x] 5. Payment slips: photos and PDFs are downloaded as soon as they arrive (paused chats too) into `data/media/` (`MEDIA_DIR`). The bot links the newest slip to that family's unpaid fees with `record_payment_slip`, asks which fees it covers when that's unclear, and never says a fee is paid. The teacher sees the slip in the chat and on **Payments** (full size on click) and approves or rejects it. Slips aren't read automatically (no vision model).
-  - [ ] 6. Talk to the teacher (handoff), memory notes, test conversations
+- [x] **Data model** (`db/schema.sql`, `db/index.js`), on Node's built-in SQLite in `data/catalyst.db`. Everything the owner enters on the dashboard lives here, and the bot answers only from it:
+  - **business** (one row): name, owner's name, opening hours, location, payment details, delivery info, handover number, the bot's on/off switch for everyone, currency
+  - **products**: name (unique, any case), price (whole LKR), stock (empty = not tracked), category, details, hidden-from-bot flag. Added by hand or imported from a CSV (all or nothing; a dry run previews it)
+  - **faqs**, **reply_languages** (Sinhala incl. Singlish, Tamil incl. Tanglish, English) and **handover_rules** ("Customer asks to speak to a person", "Bot is unsure of the answer", "Bulk order over 10 items")
+  - **contacts** (a WhatsApp number, its language and a `bot_paused` flag for handover) and **messages** (every message in and out, deduplicated by WhatsApp id)
+  - A new database starts empty; `npm test` runs the tests on an in-memory one
+- [x] **AI agent** (`bot/`, `ai/`): a Groq model runs the conversation with the product list and business details in its prompt, and tools scoped to the sender: `search_products`, `get_business_info`, `get_faqs`, `hand_off_to_owner`
+  - Replies mirror the language *and script* of the latest message (English, Sinhala, Tamil, Singlish, Tanglish), limited to the reply languages the owner switched on
+  - Made-up prices and promises it can't keep (taking orders, reserving stock) are caught and the model answers again
+  - Orders, complaints, photos and the owner's handover rules hand the chat over: the bot goes quiet there, and the handover number gets a WhatsApp alert (only delivered if that number messaged the business in the last 24 hours)
+  - Photos and PDFs are saved in `data/media/` (`MEDIA_DIR`); the bot can't see them
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
 
@@ -63,8 +59,8 @@ Put these in a `.env` file in the project root (copy `.env.example`). The server
 
 With a filled-in `.env`:
 ```bash
-npm run seed   # first time: create data/tutor.db with demo data
-npm start
+npm start      # creates data/catalyst.db (empty) on first run
+# then open http://localhost:3000/admin/ and add the business details, products and FAQs
 ```
 
 Or pass the variables directly:
@@ -81,14 +77,14 @@ VERIFY_TOKEN=your-secret APP_SECRET=your-app-secret npm start
 
 The server starts at `http://localhost:3000/webhook`.
 
-## AlchemyX Catalyst (tutor dashboard)
+## AlchemyX Catalyst (owner's dashboard)
 
-A web dashboard for the tutor, served by the same server at `http://localhost:3000/admin/` (and through ngrok at `https://<your-ngrok-host>/admin/`). Built with React + TypeScript + Vite in `web/`; the API is `admin/api.js`.
+A web dashboard for the business owner, served by the same server at `http://localhost:3000/admin/` (and through ngrok at `https://<your-ngrok-host>/admin/`). Built with React + TypeScript + Vite + Tailwind in `web/`; the API is `admin/api.js`. The sidebar collapses to an icon rail with the ☰ button, and the open page is kept in the URL (`#conversations`).
 
-- **Overview:** messages in the last 24 hours, chats handed to the teacher, slips to review, money owed, this week's sessions (with cancellations), and each contact's language
-- **Conversations:** every chat, updated every few seconds, with filters by language and paused status. **Take over** pauses the bot so the teacher can reply from the dashboard (sent on WhatsApp from the business number); **Hand back to bot** resumes it. The language each contact uses can be changed here too
-- **Classes:** seats taken per class and the next two weeks of sessions
-- **Payments:** approve or reject slips (a rejection needs a reason, which the bot gives the parent when they ask about fees) and who still owes. **Slips not linked to a fee** lists photos/PDFs from the last 7 days that no fee points at (unknown number, no unpaid fees, chat paused, or the photo came after the bot replied); the teacher can link one to that sender's unpaid fees, which moves it to review
+- **Overview:** messages answered and received in the last 24 hours, customers, chats handed over, warnings for undelivered replies, AI failures or the bot being switched off, and a setup checklist until the business details, products and FAQs are in
+- **Products:** the products the bot offers, with search. Add or edit one at a time (price, stock or "not tracked", category, details, hidden from the bot), or upload a CSV in the template's layout: it is checked first ("48 products · 40 new · 8 updated"), nothing is saved if any row is wrong, and updates only change the columns in the file. Google Sheet sync is not built yet
+- **Conversations:** every chat, refreshed every few seconds, with search and a "Needs you" filter. **Take over** pauses the bot so the owner can reply from the dashboard (sent on WhatsApp from the business number); **Return to bot** resumes it
+- **Bot settings:** business information, reply languages, handover number and rules (saved together, all or nothing), FAQs (saved one at a time), and the bot's on/off switch for everyone (takes effect at once)
 
 If `ADMIN_TOKEN` is set, every API call needs it (you type it in to sign in; it is kept only for that browser tab). If it is not set, the dashboard opens straight away with no sign-in.
 
@@ -151,17 +147,18 @@ WhatsApp-Agent/
 │   ├── agent.js   # System prompt, chat history, tool-calling loop, fallback
 │   └── tools.js   # The agent's only access to data, scoped to the sender
 ├── scripts/
-│   └── admin.js   # npm run admin -- show|pause|resume|reset|lang <number>
+│   └── admin.js   # npm run admin -- show|pause|resume|lang <number>
 ├── db/
 │   ├── schema.sql # Tables, constraints and indexes
-│   ├── index.js   # Data access functions used by the agent
-│   └── seed.js    # Demo tutor data (npm run seed; drops and recreates all tables)
+│   └── index.js   # Data access and validation, used by the agent and the dashboard API
 ├── test/
-│   ├── db.test.js # Data model tests (npm test)
-│   ├── bot.test.js   # Message pipeline tests
-│   ├── agent.test.js # Agent loop, tools and scoping (scripted fake model)
+│   ├── fixtures.js   # A small fictional shop the tests start from
+│   ├── db.test.js    # Data model tests (npm test)
+│   ├── bot.test.js   # Message pipeline tests (bot switch, handover alert)
+│   ├── agent.test.js # Agent loop, tools, languages, fact checks (scripted fake model)
+│   ├── admin.test.js # Dashboard API tests
 │   └── groq.test.js  # Groq client retries (fake fetch)
-├── data/          # tutor.db lives here (gitignored)
+├── data/          # catalyst.db and saved media live here (gitignored)
 ├── package.json   # Project metadata and npm start script
 ├── .env.example   # Template for .env (copy and fill in; .env is gitignored)
 ├── .gitignore     # Files git should not track

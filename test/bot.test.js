@@ -6,11 +6,10 @@ process.env.DB_PATH = ":memory:";
 const { test, beforeEach, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
-const { seed } = require("../db/seed");
+const { setupShop, NEW_NUMBER, PAUSED } = require("./fixtures");
 const { createHandler } = require("../bot/handler");
 
-const NEW_NUMBER = "94779990001";
-const PAUSED = "94770000204"; // seeded as paused
+const OWNER = "94711234567"; // the shop's handover number in these tests
 const quietLog = { log() {}, warn() {}, error() {} };
 
 // Fake WhatsApp client: records what would be sent. Each send takes a little time,
@@ -49,19 +48,18 @@ const messagesFor = (waId) => db.recentMessages(waId, 100);
 
 let wa, agent, bot;
 beforeEach(() => {
-  seed({ now: new Date("2026-11-10T06:00:00Z") });
+  setupShop();
   wa = fakeWhatsApp();
   agent = fakeAgent();
   bot = createHandler({ db, whatsapp: wa, agent, log: quietLog });
 });
 
 describe("message pipeline", () => {
-  test("a new number gets a contact (no student); the agent's reply is sent and both are logged", async () => {
+  test("a new number gets a contact; the agent's reply is sent and both are logged", async () => {
     const r = await bot.handleMessage(textMsg(NEW_NUMBER, "hello"));
     assert.equal(r.status, "handled");
     const contact = db.getContactByWaId(NEW_NUMBER);
     assert.ok(contact);
-    assert.deepEqual(db.listStudents(contact.id), []);
     assert.equal(agent.calls[0].contact.id, contact.id);
     assert.equal(agent.calls[0].incoming.text, "hello");
     assert.deepEqual(wa.sent.map((s) => [s.to, s.body]), [[NEW_NUMBER, "re: hello"]]);
@@ -121,14 +119,14 @@ describe("message pipeline", () => {
 
   test("sent replies carry the agent's tool runs and agent error", async () => {
     const fallback = { respond: async () => ({ replies: [{ type: "text", body: "Sorry" }], failed: true, error: "Groq API 429: rate limit",
-      toolLog: [{ name: "hand_off_to_team", ok: false, error: "summary is required." }] }) };
+      toolLog: [{ name: "hand_off_to_owner", ok: false, error: "summary is required." }] }) };
     await createHandler({ db, whatsapp: wa, agent: fallback, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "hi"));
     const [out] = messagesFor(NEW_NUMBER).filter((m) => m.direction === "out");
     assert.equal(out.status, "sent");
     assert.equal(out.sent_by, "bot");
     assert.equal(out.id, "wamid.out.1");
     assert.equal(out.agent_error, "Groq API 429: rate limit");
-    assert.deepEqual(JSON.parse(out.tools), [{ name: "hand_off_to_team", ok: false, error: "summary is required." }]);
+    assert.deepEqual(JSON.parse(out.tools), [{ name: "hand_off_to_owner", ok: false, error: "summary is required." }]);
   });
 
   test("an agent crash is contained", async () => {
@@ -156,10 +154,61 @@ describe("message pipeline", () => {
     assert.equal(agent.calls.length, 0);
   });
 
+  test("with the bot switched off for everyone: logged, but no agent call, reply or read receipt", async () => {
+    db.setBotEnabled(false);
+    const r = await bot.handleMessage(textMsg(NEW_NUMBER, "hello?"));
+    assert.equal(r.status, "bot_off");
+    assert.deepEqual([agent.calls.length, wa.sent.length, wa.read.length], [0, 0, 0]);
+    assert.equal(messagesFor(NEW_NUMBER).length, 1);
+    assert.ok(db.getContactByWaId(NEW_NUMBER), "the contact still appears on the dashboard");
+    db.setBotEnabled(true);
+    assert.equal((await bot.handleMessage(textMsg(NEW_NUMBER, "hello?"))).status, "handled");
+  });
+
   test("non-text messages reach the agent with their type", async () => {
     await bot.handleMessage({ id: "wamid.img", from: NEW_NUMBER, type: "image", image: { id: "media1" } });
     assert.equal(agent.calls[0].incoming.type, "image");
     assert.equal(agent.calls[0].incoming.text, null);
     assert.equal(messagesFor(NEW_NUMBER)[0].type, "image");
+  });
+});
+
+describe("telling the owner about a handover", () => {
+  // Fake agent that hands the chat over, as the real one does through hand_off_to_owner.
+  const handingOver = {
+    async respond({ contact }) {
+      db.setBotPaused(contact.id, true, "Handed over by the bot:\nWants 30 packs of Cinnamon Sticks");
+      return { replies: [{ type: "text", body: "The owner will reply here." }], handedOff: true };
+    },
+  };
+
+  test("the handover number gets the customer's number and the summary, after the customer's reply", async () => {
+    db.saveBusiness({ handover_number: `+${OWNER}` });
+    await createHandler({ db, whatsapp: wa, agent: handingOver, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "I want 30 packs"));
+    assert.deepEqual(wa.sent.map((s) => s.to), [NEW_NUMBER, OWNER]);
+    assert.ok(wa.sent[1].body.includes(`From: +${NEW_NUMBER}\nWants 30 packs of Cinnamon Sticks`), wa.sent[1].body);
+    assert.doesNotMatch(wa.sent[1].body, /Handed over by the bot/);
+    assert.equal(messagesFor(OWNER).length, 0, "the alert isn't logged as a customer chat");
+  });
+
+  test("no handover number, or no handover: nothing extra is sent", async () => {
+    await createHandler({ db, whatsapp: wa, agent: handingOver, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "I want 30 packs"));
+    assert.deepEqual(wa.sent.map((s) => s.to), [NEW_NUMBER]);
+    db.saveBusiness({ handover_number: OWNER });
+    await bot.handleMessage(textMsg("94775550000", "hi"));
+    assert.deepEqual(wa.sent.map((s) => s.to), [NEW_NUMBER, "94775550000"]);
+  });
+
+  test("an alert WhatsApp refuses (outside the 24-hour window) doesn't break anything", async () => {
+    db.saveBusiness({ handover_number: OWNER });
+    const picky = { ...fakeWhatsApp(), sent: [], isConfigured: () => true, markAsRead: async () => {},
+      async send(to, reply) {
+        if (to === OWNER) throw new Error("Graph API 400: outside the 24 hour window");
+        picky.sent.push({ to, ...reply });
+        return { messages: [{ id: "wamid.ok" }] };
+      } };
+    const r = await createHandler({ db, whatsapp: picky, agent: handingOver, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "order"));
+    assert.equal(r.status, "handled");
+    assert.deepEqual(picky.sent.map((s) => s.to), [NEW_NUMBER]);
   });
 });
