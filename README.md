@@ -48,7 +48,15 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `WHATSAPP_TOKEN` | For replies | none    | Access token from **WhatsApp → API Setup** (temporary tokens expire after 24h; use a System User token for anything longer-lived) |
 | `PHONE_NUMBER_ID` | For replies | none   | Phone number ID from **WhatsApp → API Setup** (not the phone number itself) |
 | `GRAPH_API_VERSION` | No    | `v24.0`     | Graph API version used for sending                            |
-| `GROQ_API_KEY` | For AI replies | none  | Groq API key. Without it the bot only sends a "having trouble" message |
+| `AI_PROVIDER`  | No       | `gemini` if `GEMINI_API_KEY` is set, else `groq` | Which AI provider the agent uses: `gemini`, `nvidia`, `openrouter` or `groq` |
+| `GEMINI_API_KEY` | For AI replies (Gemini) | none | Google AI Studio key. Without an AI key the bot only sends a "having trouble" message |
+| `GEMINI_MODEL` | No       | `gemini-3.5-flash-lite` | Gemini model (new keys can't use 2.5 models) |
+| `NVIDIA_API_KEY` | For AI replies (NVIDIA) | none | NVIDIA API key (`nvapi-...`) |
+| `NVIDIA_MODEL` | No | `moonshotai/kimi-k3.1-pro` | NVIDIA-hosted model |
+| `NVIDIA_REASONING_EFFORT` | No | model default | `low`/`medium`/`high` for reasoning models |
+| `OPENROUTER_API_KEY` | For AI replies (OpenRouter) | none | OpenRouter API key (`sk-or-...`) |
+| `OPENROUTER_MODEL` | No | `nvidia/nemotron-3.5-super-vl:free` | OpenRouter model; `:free` models cost nothing but have daily request limits |
+| `GROQ_API_KEY` | For AI replies (Groq) | none  | Groq API key |
 | `GROQ_MODEL`   | No       | `openai/gpt-oss-120b` | Groq model used by the agent                        |
 | `GROQ_REASONING_EFFORT` | No | Groq default | `low`/`medium`/`high` for gpt-oss models. `low` was tested and made the agent skip tools and invent classes |
 | `ADMIN_TOKEN`  | For the dashboard | none | Sign-in key for the AlchemyX Catalyst dashboard at `/admin`. Use a long random string. Without it the dashboard is open with no sign-in (anyone with the URL, including through ngrok, can use it) |

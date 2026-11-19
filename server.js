@@ -33,7 +33,7 @@ const whatsapp = require("./whatsapp");
 const db = require("./db");
 const { createHandler } = require("./bot/handler");
 const { createAgent } = require("./bot/agent");
-const { createGroqClient } = require("./ai/groq");
+const { createLlmClient } = require("./ai/llm");
 const { createAdmin } = require("./admin/api");
 
 if (!whatsapp.isConfigured()) {
@@ -43,13 +43,13 @@ db.open();
 if (!db.getBusiness()?.name) {
   console.warn("Note: no business details yet. Add them in the dashboard under Bot settings (and products under Products).");
 }
-const llm = createGroqClient();
+const llm = createLlmClient();
 if (!llm.isConfigured()) {
-  console.warn("Warning: GROQ_API_KEY is not set; the agent will only send its fallback message.");
+  console.warn(`Warning: ${llm.keyVar} is not set; the agent will only send its fallback message.`);
 }
 const agent = createAgent({ db, llm });
 const bot = createHandler({ db, whatsapp, agent });
-console.log(`AI model: ${llm.model}`);
+console.log(`AI model: ${llm.model} (${llm.provider})`);
 const admin = createAdmin({ db, whatsapp });
 if (!admin.requiresKey()) {
   console.warn("Note: ADMIN_TOKEN is not set; the AlchemyX Catalyst dashboard (/admin) is open to anyone who can reach this server.");
