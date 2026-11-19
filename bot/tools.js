@@ -18,9 +18,11 @@ function createTools({ db, contact }) {
       description:
         "Pass this chat to the shop owner (a human). Use it whenever one of the owner's handover rules applies " +
         "(they are in your instructions), when they want to place or confirm an order, complain, send a photo or " +
-        "document you can't act on, or ask something the other tools can't answer. Collect the useful details " +
-        "first (what they want, product, quantity, delivery area). The bot then goes quiet in this chat and the " +
-        "owner replies here.",
+        "document you can't act on, or ask something about this business the other tools can't answer. Collect " +
+        "the useful details first (what they want, product, quantity, delivery area). The bot then goes quiet in " +
+        "this chat and the owner replies here. NOT for questions about other customers or other people, or " +
+        "topics unrelated to the shop: answer those yourself (you can't share details about other customers; " +
+        "you only help with the shop).",
       parameters: {
         summary: {
           type: "string",

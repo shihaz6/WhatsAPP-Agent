@@ -139,6 +139,17 @@ describe("context sent to the model", () => {
     assert.match(prompt(contact(REGULAR)), /\(14 more not shown: use search_products\.\)/);
   });
 
+  // Phone test, 20 Nov: "who is sakitha" and "who are the other customers you got" were both handed
+  // over, pausing the bot. They should get a short answer instead.
+  test("questions about other customers or off-topic ones are answered, not handed over", () => {
+    const p = prompt(contact(REGULAR));
+    assert.match(p, /never say anything about other customers.*Don't hand over for this/);
+    assert.match(p, /Off-topic questions.*Don't hand over for these either/);
+    assert.match(p, /Bot is unsure of the answer \(about this business:/, "'unsure' means unsure about the shop");
+    const handOff = createTools({ db, contact: contact(REGULAR) }).definitions.find((d) => d.function.name === "hand_off_to_owner");
+    assert.match(handOff.function.description, /NOT for questions about other customers/);
+  });
+
   test("only the handover rules the owner left on are in the prompt", () => {
     db.saveHandoverRules([{ key: "bulk_order", enabled: false }]);
     const p = prompt(contact(REGULAR));
