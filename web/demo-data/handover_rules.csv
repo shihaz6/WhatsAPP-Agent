@@ -1,0 +1,4 @@
+﻿rule,enabled
+Customer asks to speak to a person,yes
+Bot is unsure of the answer,yes
+Bulk order over 10 items,yes

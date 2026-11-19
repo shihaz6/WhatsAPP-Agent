@@ -1,2 +1,0 @@
-file 'poster.mp4'
-file 'rest.mp4'

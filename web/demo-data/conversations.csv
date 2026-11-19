@@ -1,0 +1,6 @@
+﻿id,customer,initials,last_message,time,status,unread
+1,Nadeesha Perera,NP,Can you deliver to Kandy by Friday?,10:42,Needs you,2
+2,+94 77 324 8810,77,"Thank you, I’ll place the order now.",09:18,Bot handled,0
+3,Ashan Fernando,AF,Is the coconut oil cold pressed?,Yesterday,Bot handled,0
+4,Fathima Rizan,FR,I need 20 packs. Is there a bulk price?,Yesterday,Needs you,1
+5,+94 71 882 1045,71,What payment methods do you accept?,Mon,Bot handled,0

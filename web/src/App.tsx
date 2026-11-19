@@ -1,15 +1,21 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { api, authRequired, hasKey, setUnauthorizedHandler, signIn, signOut } from "./api";
+import type { BusinessProfile, ConversationSummary, Faq, Message, Overview, SettingsData } from "./types";
 
-// The account shown across the dashboard. The header and "Business name" use the shop's name;
-// the greeting and the avatar use the owner's.
-const account = {
-  ownerName: "Gai Damsara",
-  businessName: "Gai Damsara",
-};
+// ---------------------------------------------------------------------------------------------
+// Helpers
+
+// Words of a name without a leading title: "Mr. Nuwan Jayasekara" -> ["Nuwan", "Jayasekara"].
+const TITLES = /^(mr|mrs|ms|miss|dr|prof|rev|sir|madam)\.?$/i;
+function nameWords(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  return words.length > 1 && TITLES.test(words[0]) ? words.slice(1) : words;
+}
+const firstNameOf = (name: string) => nameWords(name)[0] ?? "";
 
 // "Gai Damsara" -> "GD", "Gai" -> "G".
 function initialsOf(name: string) {
-  const words = name.trim().split(/\s+/).filter(Boolean);
+  const words = nameWords(name);
   if (words.length === 0) return "?";
   const letters = words.length === 1 ? words[0][0] : words[0][0] + words[words.length - 1][0];
   return letters.toUpperCase();
@@ -22,6 +28,49 @@ function greetingFor(date: Date) {
   return "Good evening";
 }
 
+// "94771234567" -> "+94 77 123 4567". Other countries just get a "+".
+function formatPhone(waId: string) {
+  if (/^94\d{9}$/.test(waId)) return `+94 ${waId.slice(2, 4)} ${waId.slice(4, 7)} ${waId.slice(7)}`;
+  return `+${waId}`;
+}
+
+const contactName = (c: { name: string | null; wa_id: string }) => c.name?.trim() || formatPhone(c.wa_id);
+// A saved name gives initials; a bare number shows its operator digits (e.g. "77").
+const contactInitials = (c: { name: string | null; wa_id: string }) =>
+  c.name?.trim() ? initialsOf(c.name) : /^94\d{9}$/.test(c.wa_id) ? c.wa_id.slice(2, 4) : c.wa_id.slice(-2);
+
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+const daysAgo = (iso: string, now = new Date()) => Math.round((startOfDay(now) - startOfDay(new Date(iso))) / 86_400_000);
+const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+// Chat list: "10:42", "Yesterday", "Mon", "3 Nov".
+function shortTime(iso: string | null) {
+  if (!iso) return "";
+  const d = daysAgo(iso);
+  if (d <= 0) return clock(iso);
+  if (d === 1) return "Yesterday";
+  if (d < 7) return new Date(iso).toLocaleDateString("en-GB", { weekday: "short" });
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+// Thread separators: "Today", "Yesterday", "Thursday, 13 November".
+function dayLabel(iso: string) {
+  const d = daysAgo(iso);
+  if (d <= 0) return "Today";
+  if (d === 1) return "Yesterday";
+  return new Date(iso).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+}
+
+const MEDIA_LABELS: Record<string, string> = {
+  image: "Photo",
+  document: "Document",
+  audio: "Voice message",
+  video: "Video",
+  sticker: "Sticker",
+  location: "Location",
+};
+const mediaLabel = (type: string | null) => (type && type !== "text" ? (MEDIA_LABELS[type] ?? type) : null);
+
 // The current time, refreshed every minute so the date and greeting stay right if the page is left open.
 function useNow() {
   const [now, setNow] = useState(() => new Date());
@@ -32,7 +81,64 @@ function useNow() {
   return now;
 }
 
+// Loads data from the engine, optionally re-loading every `every` ms. Pass `null` to load nothing
+// (e.g. while the engine isn't connected). `key` identifies what is loaded: when it changes,
+// the old data is cleared instead of being shown for the new item.
+function useLoad<T>(load: (() => Promise<T>) | null, { every, key = "" }: { every?: number; key?: string } = {}) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [tick, setTick] = useState(0);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const lastKey = useRef(key);
+  const enabled = load !== null;
+
+  useEffect(() => {
+    if (lastKey.current !== key) {
+      lastKey.current = key;
+      setData(null);
+    }
+    if (!enabled) {
+      setData(null);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = async (first: boolean) => {
+      if (first) setLoading(true);
+      try {
+        const result = await loadRef.current!();
+        if (!cancelled) {
+          setData(result);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          if (every) timer = setTimeout(() => run(false), every);
+        }
+      }
+    };
+    run(true);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [enabled, key, every, tick]);
+
+  const reload = useCallback(() => setTick((t) => t + 1), []);
+  return { data, error, loading, reload, setData };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Icons and small components
+
 type Page = "products" | "overview" | "conversations" | "settings";
+type Connection = "checking" | "live" | "offline";
 type IconName =
   | "box"
   | "chart"
@@ -41,13 +147,11 @@ type IconName =
   | "upload"
   | "sheet"
   | "plus"
-  | "refresh"
   | "download"
   | "search"
   | "more"
   | "arrow"
   | "store"
-  | "clock"
   | "pin"
   | "card"
   | "truck"
@@ -56,7 +160,9 @@ type IconName =
   | "chevron"
   | "menu"
   | "close"
-  | "send";
+  | "send"
+  | "alert"
+  | "users";
 
 const iconPaths: Record<IconName, ReactNode> = {
   box: (
@@ -65,11 +171,7 @@ const iconPaths: Record<IconName, ReactNode> = {
       <path d="M4 7v10l8 4 8-4V7M12 11v10" />
     </>
   ),
-  chart: (
-    <>
-      <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
-    </>
-  ),
+  chart: <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />,
   chat: (
     <>
       <path d="M21 12a8 8 0 0 1-9 8 9 9 0 0 1-4-.9L3 21l1.7-4.2A8 8 0 1 1 21 12Z" />
@@ -95,12 +197,6 @@ const iconPaths: Record<IconName, ReactNode> = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
-  refresh: (
-    <>
-      <path d="M20 7v5h-5" />
-      <path d="M19 12a7 7 0 1 0-2 5" />
-    </>
-  ),
   download: (
     <>
       <path d="M12 3v12M7 10l5 5 5-5" />
@@ -120,21 +216,11 @@ const iconPaths: Record<IconName, ReactNode> = {
       <circle cx="19" cy="12" r="1" />
     </>
   ),
-  arrow: (
-    <>
-      <path d="M5 12h14M14 7l5 5-5 5" />
-    </>
-  ),
+  arrow: <path d="M5 12h14M14 7l5 5-5 5" />,
   store: (
     <>
       <path d="M3 10h18L19 4H5l-2 6Z" />
       <path d="M5 10v10h14V10M9 20v-6h6v6" />
-    </>
-  ),
-  clock: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
     </>
   ),
   pin: (
@@ -164,6 +250,18 @@ const iconPaths: Record<IconName, ReactNode> = {
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   send: <path d="m3 3 18 9-18 9 4-9-4-9Zm4 9h14" />,
+  alert: (
+    <>
+      <path d="M12 3 2 20h20L12 3Z" />
+      <path d="M12 10v4M12 17h.01" />
+    </>
+  ),
+  users: (
+    <>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6" />
+    </>
+  ),
 };
 
 function Icon({ name, className = "h-5 w-5" }: { name: IconName; className?: string }) {
@@ -193,92 +291,6 @@ const navItems: { id: Page; label: string; short: string; icon: IconName }[] = [
 
 const SIDEBAR_KEY = "catalyst.sidebarCollapsed";
 
-const products = [
-  {
-    name: "Ceylon Cinnamon Sticks",
-    detail: "100g pack",
-    price: "Rs 1,250",
-    stock: 24,
-    category: "Spices",
-  },
-  {
-    name: "Organic Coconut Oil",
-    detail: "500ml bottle",
-    price: "Rs 1,800",
-    stock: 12,
-    category: "Pantry",
-  },
-  {
-    name: "Kithul Treacle",
-    detail: "350ml bottle",
-    price: "Rs 980",
-    stock: 0,
-    category: "Sweeteners",
-  },
-  {
-    name: "Ceylon Black Tea",
-    detail: "200g loose leaf",
-    price: "Rs 1,450",
-    stock: 38,
-    category: "Tea",
-  },
-  {
-    name: "Roasted Cashews",
-    detail: "250g pouch",
-    price: "Rs 2,200",
-    stock: 6,
-    category: "Snacks",
-  },
-];
-
-const conversations = [
-  {
-    id: 1,
-    name: "Nadeesha Perera",
-    initials: "NP",
-    message: "Can you deliver to Kandy by Friday?",
-    time: "10:42",
-    status: "Needs you",
-    unread: 2,
-  },
-  {
-    id: 2,
-    name: "+94 77 324 8810",
-    initials: "77",
-    message: "Thank you, I’ll place the order now.",
-    time: "09:18",
-    status: "Bot handled",
-    unread: 0,
-  },
-  {
-    id: 3,
-    name: "Ashan Fernando",
-    initials: "AF",
-    message: "Is the coconut oil cold pressed?",
-    time: "Yesterday",
-    status: "Bot handled",
-    unread: 0,
-  },
-  {
-    id: 4,
-    name: "Fathima Rizan",
-    initials: "FR",
-    message: "I need 20 packs. Is there a bulk price?",
-    time: "Yesterday",
-    status: "Needs you",
-    unread: 1,
-  },
-  {
-    id: 5,
-    name: "+94 71 882 1045",
-    initials: "71",
-    message: "What payment methods do you accept?",
-    time: "Mon",
-    status: "Bot handled",
-    unread: 0,
-  },
-];
-
 function Logo({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
@@ -299,12 +311,14 @@ function Button({
   className = "",
   onClick,
   type = "button",
+  disabled = false,
 }: {
   children: ReactNode;
   variant?: "primary" | "secondary" | "ghost";
   className?: string;
   onClick?: () => void;
   type?: "button" | "submit";
+  disabled?: boolean;
 }) {
   const styles =
     variant === "primary"
@@ -316,20 +330,72 @@ function Button({
     <button
       type={type}
       onClick={onClick}
-      className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition ${styles} ${className}`}
+      disabled={disabled}
+      className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}
     >
       {children}
     </button>
   );
 }
 
+// Marks a part of the design the engine can't store or use yet.
+function NotConnected() {
+  return (
+    <span className="inline-flex shrink-0 items-center rounded-full bg-[#f1efec] px-2 py-0.5 text-[10px] font-semibold text-[#8a847e]">
+      Not connected yet
+    </span>
+  );
+}
+
+function EmptyState({ icon, title, text }: { icon: IconName; title: string; text: string }) {
+  return (
+    <div className="flex flex-col items-center px-6 py-14 text-center">
+      <span className="grid h-12 w-12 place-items-center rounded-2xl bg-[#f3f1ee] text-[#a29c96]">
+        <Icon name={icon} className="h-6 w-6" />
+      </span>
+      <p className="mt-4 font-semibold text-[#3a3836]">{title}</p>
+      <p className="mt-1 max-w-sm text-sm leading-relaxed text-[#8a847e]">{text}</p>
+    </div>
+  );
+}
+
+function ErrorNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-2 rounded-xl bg-[#fff0ef] px-4 py-3 text-sm font-medium text-[#c2433b]">
+      <Icon name="alert" className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>{children}</span>
+    </div>
+  );
+}
+
+function PageHeading({ title, text, children }: { title: ReactNode; text: string; children?: ReactNode }) {
+  return (
+    <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+      <div>
+        <h2 className="text-2xl font-semibold tracking-[-.03em] text-[#292929] md:text-[28px]">{title}</h2>
+        <p className="mt-1 text-sm text-[#77716c]">{text}</p>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shell: sidebar, header, phone tab bar
+
 function AppShell({
   page,
   setPage,
+  businessName,
+  needsYou,
+  connection,
   children,
 }: {
   page: Page;
   setPage: (p: Page) => void;
+  businessName: string | null;
+  needsYou: number;
+  connection: Connection;
   children: ReactNode;
 }) {
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -352,7 +418,14 @@ function AppShell({
     else setMobileMenu(true);
   };
   const title = navItems.find((item) => item.id === page)?.label;
-  const needsYou = 3;
+  const live = connection === "live";
+  const status = {
+    live: { dot: "bg-[#47B881]", short: "Live", title: "Bot is live", text: "Replying to customers on WhatsApp." },
+    checking: { dot: "bg-[#c9a227]", short: "…", title: "Connecting", text: "Reaching the WhatsApp engine." },
+    offline: { dot: "bg-[#8a8580]", short: "Offline", title: "Not connected", text: "Can't reach the WhatsApp engine." },
+  }[connection];
+  const badge = needsYou > 0 ? needsYou : null;
+
   return (
     // --sidebar-w lets the content column and fixed bars (e.g. the save bar) follow the sidebar's width.
     <div
@@ -368,6 +441,7 @@ function AppShell({
         <nav className={`mt-11 ${collapsed ? "space-y-1" : "space-y-1.5"}`}>
           {navItems.map((item) => {
             const active = page === item.id;
+            const showBadge = item.id === "conversations" && badge;
             return collapsed ? (
               <button
                 key={item.id}
@@ -378,11 +452,11 @@ function AppShell({
               >
                 <span className="relative">
                   <Icon name={item.icon} className="h-5 w-5" />
-                  {item.id === "conversations" && (
+                  {showBadge && (
                     <span
                       className={`absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[9px] font-bold ${active ? "bg-white text-[#e8743b]" : "bg-[#FF8A4C] text-white"}`}
                     >
-                      {needsYou}
+                      {badge}
                     </span>
                   )}
                 </span>
@@ -396,11 +470,11 @@ function AppShell({
               >
                 <Icon name={item.icon} className="h-[19px] w-[19px] shrink-0" />
                 {item.label}
-                {item.id === "conversations" && (
+                {showBadge && (
                   <span
                     className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold ${active ? "bg-white/20" : "bg-[#343434] text-[#d8d8d8]"}`}
                   >
-                    {needsYou}
+                    {badge}
                   </span>
                 )}
               </button>
@@ -410,40 +484,37 @@ function AppShell({
         {collapsed ? (
           <div
             className="mt-auto flex flex-col items-center gap-1.5 text-[10px] font-medium text-[#898989]"
-            title="Bot is live: replying to customers on WhatsApp"
+            title={`${status.title}: ${status.text}`}
           >
-            <span className="h-2 w-2 rounded-full bg-[#47B881]" />
-            Live
+            <span className={`h-2 w-2 rounded-full ${status.dot}`} />
+            {status.short}
           </div>
         ) : (
           // Fixed min width so the text doesn't reflow while the sidebar animates open.
           <div className="mt-auto min-w-[204px] rounded-2xl border border-white/10 bg-white/[.04] p-4">
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-white">
-              <span className="h-2 w-2 rounded-full bg-[#47B881]" />
-              Bot is live
+              <span className={`h-2 w-2 rounded-full ${status.dot}`} />
+              {status.title}
             </div>
-            <p className="text-[11px] leading-relaxed text-[#898989]">
-              Replying to customers on WhatsApp.
-            </p>
+            <p className="text-[11px] leading-relaxed text-[#898989]">{status.text}</p>
           </div>
         )}
-        <button
-          title={collapsed ? `${account.ownerName} · Owner account` : undefined}
-          className={`mt-5 flex items-center text-left ${collapsed ? "justify-center" : "gap-3 whitespace-nowrap px-3"}`}
-        >
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#343434] text-xs font-semibold text-white">
-            {initialsOf(account.ownerName)}
-          </span>
-          {!collapsed && (
-            <>
-              <span>
-                <span className="block text-xs font-medium text-white">{account.ownerName}</span>
+        {businessName && (
+          <div
+            title={collapsed ? businessName : undefined}
+            className={`mt-5 flex items-center text-left ${collapsed ? "justify-center" : "gap-3 whitespace-nowrap px-3"}`}
+          >
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#343434] text-xs font-semibold text-white">
+              {initialsOf(businessName)}
+            </span>
+            {!collapsed && (
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium text-white">{businessName}</span>
                 <span className="block text-[10px] text-[#7c7c7c]">Owner account</span>
               </span>
-              <Icon name="more" className="ml-auto h-4 w-4 text-[#777]" />
-            </>
-          )}
-        </button>
+            )}
+          </div>
+        )}
       </aside>
 
       {mobileMenu && (
@@ -493,21 +564,22 @@ function AppShell({
           >
             <Icon name="menu" />
           </button>
-          <div>
-            <p className="hidden text-[11px] font-medium uppercase tracking-[.14em] text-[#aaa] sm:block">
-              {account.businessName}
-            </p>
+          <div className="min-w-0">
+            {businessName && (
+              <p className="hidden truncate text-[11px] font-medium uppercase tracking-[.14em] text-[#aaa] sm:block">
+                {businessName}
+              </p>
+            )}
             <h1 className="text-lg font-semibold tracking-tight text-[#292929] sm:text-[15px]">
               {title}
             </h1>
           </div>
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#eaf7f0] px-2.5 py-1.5 text-xs font-semibold text-[#27835a]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#38a976]" /> Live
-            </span>
-            <span className="hidden h-5 w-px bg-[#e2dfda] sm:block" />
-            <span className="rounded-full bg-[#fff4eb] px-2.5 py-1.5 text-xs font-semibold text-[#c96531]">
-              Trial: 5 days left
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold ${live ? "bg-[#eaf7f0] text-[#27835a]" : "bg-[#f1efec] text-[#7a746e]"}`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-[#38a976]" : status.dot}`} />{" "}
+              {live ? "Live" : connection === "checking" ? "Connecting" : "Offline"}
             </span>
           </div>
         </header>
@@ -531,319 +603,49 @@ function AppShell({
   );
 }
 
-function ProductsPage() {
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [showImport, setShowImport] = useState(false);
-  const [synced, setSynced] = useState("10 min ago");
-  const [query, setQuery] = useState("");
-  const [showManual, setShowManual] = useState(false);
-  const [notice, setNotice] = useState("");
-  const filtered = products.filter(
-    (p) =>
-      p.name.toLowerCase().includes(query.toLowerCase()) ||
-      p.category.toLowerCase().includes(query.toLowerCase()),
-  );
-  const actionCards = [
+// ---------------------------------------------------------------------------------------------
+// Overview
+
+function OverviewPage({
+  overview,
+  onViewConversations,
+}: {
+  overview: Overview | null;
+  onViewConversations: () => void;
+}) {
+  const now = useNow();
+  const counts = overview?.counts;
+  const firstName = overview?.tutor?.name ? firstNameOf(overview.tutor.name) : "";
+  const value = (n: number | undefined) => (n === undefined ? "—" : n.toLocaleString("en-GB"));
+  const stats: { label: string; value: string; note: string; icon: IconName }[] = [
     {
-      title: "Upload Excel / CSV",
-      text: "Import your product list in one go.",
-      icon: "upload" as IconName,
-      action: () => fileInput.current?.click(),
-      button: "Choose a file",
+      label: "Messages answered",
+      value: value(counts?.messages_out_24h),
+      note: counts ? `Last 24 hours · ${counts.messages_in_24h} received` : "Last 24 hours",
+      icon: "chat",
     },
     {
-      title: "Connect Google Sheet",
-      text: "Keep stock and prices in sync.",
-      icon: "sheet" as IconName,
-      action: () => setNotice("Google Sheet connected"),
-      button: "Connect sheet",
-    },
-    {
-      title: "Add manually",
-      text: "Create one product at a time.",
-      icon: "plus" as IconName,
-      action: () => setShowManual(true),
-      button: "Add product",
-    },
-  ];
-  return (
-    <>
-      <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-[-.03em] text-[#292929] md:text-[28px]">
-            Products
-          </h2>
-          <p className="mt-1 text-sm text-[#77716c]">
-            Give your bot the right prices, stock, and product details.
-          </p>
-        </div>
-        <a
-          download="catalyst-product-template.csv"
-          href={
-            "data:text/csv;charset=utf-8," +
-            encodeURIComponent("Product Name,Selling Price,Stock,Category,Description\n")
-          }
-          className="inline-flex items-center gap-2 text-sm font-semibold text-[#d96833] hover:underline"
-        >
-          <Icon name="download" className="h-4 w-4" />
-          Download template
-        </a>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-3">
-        {actionCards.map((card) => (
-          <div
-            key={card.title}
-            className="group rounded-2xl border border-[#e4e1dd] bg-white p-5 shadow-[0_2px_8px_rgba(28,25,22,.025)] transition hover:-translate-y-0.5 hover:border-[#f2b18d] hover:shadow-[0_8px_24px_rgba(28,25,22,.06)]"
-          >
-            <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-[#fff1e8] text-[#e9763d]">
-              <Icon name={card.icon} className="h-5 w-5" />
-            </div>
-            <h3 className="font-semibold text-[#30302f]">{card.title}</h3>
-            <p className="mt-1 min-h-10 text-sm leading-relaxed text-[#817b75]">{card.text}</p>
-            <button
-              onClick={card.action}
-              className="mt-4 inline-flex items-center gap-1.5 text-sm font-semibold text-[#d96833]"
-            >
-              {card.button}
-              <Icon name="arrow" className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
-            </button>
-          </div>
-        ))}
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".csv,.xls,.xlsx"
-          className="hidden"
-          onChange={(e) => e.target.files?.[0] && setShowImport(true)}
-        />
-      </div>
-
-      {showImport && (
-        <div className="mt-5 rounded-2xl border border-[#f2c6aa] bg-[#fffaf7] p-4 sm:p-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#ffeadc] text-[#dc6d37]">
-              <Icon name="check" />
-            </div>
-            <div className="flex-1">
-              <p className="font-semibold text-[#343230]">We found 48 products</p>
-              <p className="mt-1 text-sm text-[#756f69]">
-                Price column ={" "}
-                <span className="rounded bg-white px-1.5 py-0.5 font-mono text-xs font-semibold text-[#4b4743]">
-                  'Selling Price'
-                </span>{" "}
-                · Stock column ={" "}
-                <span className="rounded bg-white px-1.5 py-0.5 font-mono text-xs font-semibold text-[#4b4743]">
-                  'Qty'
-                </span>
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="ghost" onClick={() => setShowImport(false)}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => {
-                  setShowImport(false);
-                  setNotice("48 products imported successfully");
-                }}
-              >
-                Confirm import
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {notice && (
-        <div className="mt-5 flex items-center gap-2 rounded-xl bg-[#eaf7f0] px-4 py-3 text-sm font-medium text-[#267b55]">
-          <Icon name="check" className="h-4 w-4" />
-          {notice}
-          <button className="ml-auto" onClick={() => setNotice("")}>
-            <Icon name="close" className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-
-      <section className="mt-7 overflow-hidden rounded-2xl border border-[#e4e1dd] bg-white shadow-[0_2px_8px_rgba(28,25,22,.025)]">
-        <div className="flex flex-col gap-4 border-b border-[#ece9e5] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <div>
-            <h3 className="font-semibold text-[#2e2e2d]">
-              Your products <span className="ml-1 text-sm font-normal text-[#99928c]">48</span>
-            </h3>
-            <p className="mt-0.5 text-xs text-[#9a938d]">Last synced: {synced}</p>
-          </div>
-          <div className="flex gap-2">
-            <label className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[#e2dfdb] bg-[#fafaf9] px-3 sm:w-52">
-              <Icon name="search" className="h-4 w-4 text-[#9a9691]" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search products"
-                className="w-full bg-transparent py-2.5 text-sm outline-none placeholder:text-[#aaa6a1]"
-              />
-            </label>
-            <Button
-              variant="secondary"
-              className="shrink-0 px-3 sm:px-4"
-              onClick={() => {
-                setSynced("just now");
-                setNotice("Products synced with Google Sheet");
-              }}
-            >
-              <Icon name="refresh" className="h-4 w-4" />
-              <span className="hidden sm:inline">Sync now</span>
-            </Button>
-          </div>
-        </div>
-
-        <div className="hidden overflow-x-auto md:block">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-[#faf9f7] text-[11px] font-semibold uppercase tracking-[.08em] text-[#97918b]">
-                <th className="px-5 py-3">Product</th>
-                <th className="px-4 py-3">Price</th>
-                <th className="px-4 py-3">Stock</th>
-                <th className="px-4 py-3">Category</th>
-                <th className="px-5 py-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#efedea]">
-              {filtered.map((product) => (
-                <tr key={product.name} className="transition hover:bg-[#fdfcfb]">
-                  <td className="px-5 py-4">
-                    <p className="text-sm font-semibold text-[#373533]">{product.name}</p>
-                    <p className="mt-0.5 text-xs text-[#99938d]">{product.detail}</p>
-                  </td>
-                  <td className="px-4 py-4 text-sm font-medium">{product.price}</td>
-                  <td className="px-4 py-4">
-                    {product.stock === 0 ? (
-                      <span className="rounded-full bg-[#fff0ef] px-2.5 py-1 text-xs font-semibold text-[#d64b43]">
-                        Out of stock
-                      </span>
-                    ) : (
-                      <span
-                        className={`text-sm font-medium ${product.stock < 10 ? "text-[#d56c32]" : "text-[#55514d]"}`}
-                      >
-                        {product.stock} units
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-4">
-                    <span className="rounded-lg bg-[#f2f1ef] px-2.5 py-1 text-xs text-[#65605b]">
-                      {product.category}
-                    </span>
-                  </td>
-                  <td className="px-5 py-4 text-right">
-                    <button
-                      onClick={() => {
-                        setShowManual(true);
-                        setNotice(`Editing ${product.name}`);
-                      }}
-                      className="rounded-lg border border-[#e1ded9] px-3 py-1.5 text-xs font-semibold hover:bg-[#f6f4f2]"
-                    >
-                      Edit
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="divide-y divide-[#eeebe7] md:hidden">
-          {filtered.map((product) => (
-            <div key={product.name} className="p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-semibold">{product.name}</h4>
-                  <p className="mt-0.5 text-xs text-[#928c86]">
-                    {product.detail} · {product.category}
-                  </p>
-                </div>
-                <button
-                  aria-label={`Edit ${product.name}`}
-                  onClick={() => setShowManual(true)}
-                  className="rounded-lg border border-[#e4e0dc] p-2"
-                >
-                  <Icon name="more" className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-sm font-semibold">{product.price}</span>
-                {product.stock === 0 ? (
-                  <span className="rounded-full bg-[#fff0ef] px-2.5 py-1 text-xs font-semibold text-[#d64b43]">
-                    Out of stock
-                  </span>
-                ) : (
-                  <span
-                    className={`text-xs font-medium ${product.stock < 10 ? "text-[#d56c32]" : "text-[#777]"}`}
-                  >
-                    {product.stock} in stock
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {showManual && (
-        <Modal
-          title={notice.startsWith("Editing") ? "Edit product" : "Add a product"}
-          onClose={() => {
-            setShowManual(false);
-            if (notice.startsWith("Editing")) setNotice("");
-          }}
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setShowManual(false);
-              setNotice("Product saved successfully");
-            }}
-            className="space-y-4"
-          >
-            <Field label="Product name" placeholder="e.g. Ceylon Black Tea" />
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Price (Rs)" placeholder="1,250" />
-              <Field label="Stock" placeholder="24" />
-            </div>
-            <Field label="Category" placeholder="e.g. Tea" />
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="secondary" onClick={() => setShowManual(false)}>
-                Cancel
-              </Button>
-              <Button type="submit">Save product</Button>
-            </div>
-          </form>
-        </Modal>
-      )}
-    </>
-  );
-}
-
-function OverviewPage({ onViewConversations }: { onViewConversations: () => void }) {
-  const stats = [
-    {
-      label: "Messages answered today",
-      value: "38",
-      note: "+12% from yesterday",
-      icon: "chat" as IconName,
-    },
-    {
-      label: "Customers helped this week",
-      value: "127",
-      note: "Across 183 conversations",
-      icon: "chart" as IconName,
+      label: "Customers",
+      value: value(counts?.contacts),
+      note: "Everyone who has messaged you",
+      icon: "users",
     },
     {
       label: "Handed over to you",
-      value: "9",
-      note: "3 still need a reply",
-      icon: "phone" as IconName,
+      value: value(counts?.paused),
+      note: !counts ? "Chats waiting for you" : counts.paused ? "Waiting for your reply" : "Bot is handling every chat",
+      icon: "phone",
     },
   ];
-  const now = useNow();
+  const problems = counts
+    ? [
+        counts.undelivered_24h > 0 &&
+          `${counts.undelivered_24h} ${counts.undelivered_24h === 1 ? "reply" : "replies"} couldn't be sent on WhatsApp in the last 24 hours.`,
+        counts.agent_errors_24h > 0 &&
+          `The AI failed ${counts.agent_errors_24h} ${counts.agent_errors_24h === 1 ? "time" : "times"} in the last 24 hours; customers got the fallback message.`,
+      ].filter((p): p is string => Boolean(p))
+    : [];
+
   return (
     <>
       <div className="mb-7">
@@ -851,13 +653,14 @@ function OverviewPage({ onViewConversations }: { onViewConversations: () => void
           {now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}
         </p>
         <h2 className="mt-1 text-2xl font-semibold tracking-[-.03em] md:text-[28px]">
-          {greetingFor(now)}, {account.ownerName.split(" ")[0]}
+          {greetingFor(now)}
+          {firstName ? `, ${firstName}` : ""}
         </h2>
         <p className="mt-1 text-sm text-[#77716c]">
           Here’s how Catalyst is helping your customers today.
         </p>
       </div>
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {stats.map((stat) => (
           <div key={stat.label} className="rounded-2xl border border-[#e4e1dd] bg-white p-5">
             <div className="flex items-start justify-between">
@@ -871,318 +674,503 @@ function OverviewPage({ onViewConversations }: { onViewConversations: () => void
           </div>
         ))}
       </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-[1.5fr_1fr]">
-        <div className="relative overflow-hidden rounded-2xl bg-[#242321] p-6 text-white">
-          <div className="absolute -right-12 -top-16 h-52 w-52 rounded-full bg-[#FF8A4C]/10" />
-          <span className="text-xs font-semibold uppercase tracking-[.12em] text-[#FF9E69]">
-            Your week with Catalyst
-          </span>
-          <h3 className="mt-5 max-w-lg text-2xl font-medium leading-snug tracking-[-.025em] md:text-[28px]">
-            Catalyst answered <span className="text-[#FF9A62]">214 messages</span> for you this
-            week.
-          </h3>
-          <p className="mt-3 max-w-md text-sm leading-relaxed text-[#aaa7a3]">
-            That’s about 3.5 hours saved — time you can spend running your business.
-          </p>
-          <div className="mt-7 flex items-center gap-3">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full w-[72%] rounded-full bg-[#FF8A4C]" />
-            </div>
-            <span className="text-xs text-[#a8a5a0]">5 days left</span>
+
+      {problems.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {problems.map((p) => (
+            <ErrorNote key={p}>{p}</ErrorNote>
+          ))}
+        </div>
+      )}
+
+      {counts && counts.paused > 0 && (
+        <div className="mt-4 rounded-2xl border border-[#f0d0bc] bg-[#fffaf7] p-5 sm:flex sm:items-center">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#ffeadc] text-[#dd6d37]">
+            <Icon name="chat" />
           </div>
-        </div>
-        <div className="rounded-2xl border border-[#e4e1dd] bg-white p-5">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold">Most asked about</h3>
-            <span className="text-xs text-[#96908a]">This week</span>
+          <div className="mt-3 sm:ml-4 sm:mt-0">
+            <p className="font-semibold">
+              {counts.paused} {counts.paused === 1 ? "conversation needs" : "conversations need"} your attention
+            </p>
+            <p className="mt-0.5 text-sm text-[#7e7771]">
+              The bot handed {counts.paused === 1 ? "it" : "them"} over and is waiting for your reply.
+            </p>
           </div>
-          <div className="mt-5 space-y-5">
-            {["Ceylon Cinnamon Sticks", "Delivery to Kandy", "Payment methods"].map((item, i) => (
-              <div key={item} className="flex items-center gap-3">
-                <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#f3f1ee] text-xs font-bold text-[#8a837d]">
-                  {i + 1}
-                </span>
-                <div className="flex-1">
-                  <div className="flex justify-between text-sm">
-                    <span className="font-medium">{item}</span>
-                    <span className="text-[#96908a]">{[47, 32, 26][i]}</span>
-                  </div>
-                  <div className="mt-2 h-1 rounded bg-[#eeeae6]">
-                    <div
-                      className="h-full rounded bg-[#FF8A4C]"
-                      style={{ width: `${[100, 68, 55][i]}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <Button className="mt-4 w-full sm:ml-auto sm:mt-0 sm:w-auto" onClick={onViewConversations}>
+            View conversations
+          </Button>
         </div>
-      </div>
-      <div className="mt-4 rounded-2xl border border-[#f0d0bc] bg-[#fffaf7] p-5 sm:flex sm:items-center">
-        <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#ffeadc] text-[#dd6d37]">
-          <Icon name="chat" />
-        </div>
-        <div className="mt-3 sm:ml-4 sm:mt-0">
-          <p className="font-semibold">3 conversations need your attention</p>
-          <p className="mt-0.5 text-sm text-[#7e7771]">
-            Customers are waiting for a personal reply.
-          </p>
-        </div>
-        <Button className="mt-4 w-full sm:ml-auto sm:mt-0 sm:w-auto" onClick={onViewConversations}>
-          View conversations
-        </Button>
-      </div>
+      )}
     </>
   );
 }
 
-function ConversationsPage() {
-  // On a phone, start on the list (only one pane fits); on desktop, open the first chat beside it.
-  const [selected, setSelected] = useState(() =>
-    window.matchMedia("(min-width: 1024px)").matches ? conversations[0].id : 0,
-  );
-  const [takenOver, setTakenOver] = useState(false);
-  const [reply, setReply] = useState("");
-  const [sent, setSent] = useState<string[]>([]);
-  const active = conversations.find((c) => c.id === selected) ?? conversations[0];
+// ---------------------------------------------------------------------------------------------
+// Products (the engine has no products yet)
+
+function ProductsPage() {
+  const actionCards: { title: string; text: string; icon: IconName }[] = [
+    { title: "Upload Excel / CSV", text: "Import your product list in one go.", icon: "upload" },
+    { title: "Connect Google Sheet", text: "Keep stock and prices in sync.", icon: "sheet" },
+    { title: "Add manually", text: "Create one product at a time.", icon: "plus" },
+  ];
   return (
     <>
-      <div className="mb-6">
-        <h2 className="text-2xl font-semibold tracking-[-.03em] md:text-[28px]">Conversations</h2>
-        <p className="mt-1 text-sm text-[#77716c]">
-          See what customers are asking and step in when they need you.
-        </p>
+      <PageHeading title="Products" text="Give your bot the right prices, stock, and product details.">
+        <a
+          download="catalyst-product-template.csv"
+          href={
+            "data:text/csv;charset=utf-8," +
+            encodeURIComponent("Product Name,Selling Price,Stock,Category,Description\n")
+          }
+          className="inline-flex items-center gap-2 text-sm font-semibold text-[#d96833] hover:underline"
+        >
+          <Icon name="download" className="h-4 w-4" />
+          Download template
+        </a>
+      </PageHeading>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        {actionCards.map((card) => (
+          <div
+            key={card.title}
+            className="rounded-2xl border border-[#e4e1dd] bg-white p-5 shadow-[0_2px_8px_rgba(28,25,22,.025)]"
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#fff1e8] text-[#e9763d]">
+                <Icon name={card.icon} className="h-5 w-5" />
+              </div>
+              <NotConnected />
+            </div>
+            <h3 className="font-semibold text-[#30302f]">{card.title}</h3>
+            <p className="mt-1 text-sm leading-relaxed text-[#817b75]">{card.text}</p>
+          </div>
+        ))}
       </div>
-      <div className="grid min-h-[650px] overflow-hidden rounded-2xl border border-[#e2dfda] bg-white shadow-[0_2px_8px_rgba(28,25,22,.03)] lg:grid-cols-[360px_1fr]">
-        <div className={`${selected ? "hidden lg:block" : "block"} border-r border-[#e9e6e2]`}>
+
+      <section className="mt-7 overflow-hidden rounded-2xl border border-[#e4e1dd] bg-white shadow-[0_2px_8px_rgba(28,25,22,.025)]">
+        <div className="border-b border-[#ece9e5] p-4 sm:px-5">
+          <h3 className="font-semibold text-[#2e2e2d]">Your products</h3>
+        </div>
+        <EmptyState
+          icon="box"
+          title="No products yet"
+          text="The WhatsApp engine doesn't store products yet, so the bot can't answer from them. They'll show here once it does."
+        />
+      </section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Conversations
+
+function ConversationsPage({ connected, onChanged }: { connected: boolean; onChanged: () => void }) {
+  const list = useLoad(connected ? api.conversations : null, { every: 5000 });
+  const [selected, setSelected] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "needs">("all");
+  const [query, setQuery] = useState("");
+  const detail = useLoad(connected && selected ? () => api.conversation(selected) : null, {
+    every: 4000,
+    key: selected ?? "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // On desktop, open the newest chat beside the list; on a phone, start on the list.
+  const rows = list.data ?? [];
+  useEffect(() => {
+    if (!selected && rows.length && window.matchMedia("(min-width: 1024px)").matches) setSelected(rows[0].wa_id);
+  }, [rows, selected]);
+
+  const needsYou = rows.filter((c) => c.bot_paused).length;
+  const q = query.trim().toLowerCase();
+  const digits = q.replace(/\D/g, "");
+  const shown = rows.filter(
+    (c) =>
+      (filter === "all" || c.bot_paused) &&
+      (!q || contactName(c).toLowerCase().includes(q) || (digits !== "" && c.wa_id.includes(digits))),
+  );
+  const contact = detail.data?.contact ?? rows.find((c) => c.wa_id === selected) ?? null;
+  const paused = Boolean(contact?.bot_paused);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await fn();
+      detail.reload();
+      list.reload();
+      onChanged();
+      return true;
+    } catch (err) {
+      setActionError((err as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeading title="Conversations" text="See what customers are asking and step in when they need you." />
+      <div className="grid grid-cols-1 h-[calc(100dvh-230px)] min-h-[520px] overflow-hidden rounded-2xl border border-[#e2dfda] bg-white shadow-[0_2px_8px_rgba(28,25,22,.03)] lg:h-[calc(100dvh-220px)] lg:grid-cols-[360px_minmax(0,1fr)]">
+        <div className={`${selected ? "hidden lg:flex" : "flex"} min-h-0 flex-col border-r border-[#e9e6e2]`}>
           <div className="border-b border-[#ebe8e4] p-4">
             <label className="flex items-center gap-2 rounded-xl bg-[#f6f5f3] px-3">
               <Icon name="search" className="h-4 w-4 text-[#999]" />
               <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
                 className="w-full bg-transparent py-2.5 text-sm outline-none"
-                placeholder="Search conversations"
+                placeholder="Search by name or number"
               />
             </label>
             <div className="mt-3 flex gap-2">
-              <button className="rounded-full bg-[#282725] px-3 py-1.5 text-xs font-semibold text-white">
-                All 12
-              </button>
-              <button className="rounded-full bg-[#fff0e7] px-3 py-1.5 text-xs font-semibold text-[#cf6531]">
-                Needs you 3
-              </button>
-            </div>
-          </div>
-          <div className="divide-y divide-[#eeece9]">
-            {conversations.map((conversation) => (
               <button
-                key={conversation.id}
-                onClick={() => {
-                  setSelected(conversation.id);
-                  setTakenOver(false);
-                }}
-                className={`w-full p-4 text-left transition hover:bg-[#faf9f7] ${selected === conversation.id ? "bg-[#fff8f3] shadow-[inset_3px_0_0_#FF8A4C]" : ""}`}
+                onClick={() => setFilter("all")}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold ${filter === "all" ? "bg-[#282725] text-white" : "bg-[#f1efec] text-[#6d6762]"}`}
               >
-                <div className="flex gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e8e5e1] text-xs font-semibold text-[#5d5853]">
-                    {conversation.initials}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-semibold">{conversation.name}</p>
-                      <span className="shrink-0 text-[10px] text-[#9d9791]">
-                        {conversation.time}
-                      </span>
-                    </div>
-                    <p className="mt-1 truncate text-xs text-[#827c76]">{conversation.message}</p>
-                    <div className="mt-2 flex items-center justify-between">
-                      <span
-                        className={`rounded-full px-2 py-1 text-[10px] font-semibold ${conversation.status === "Needs you" ? "bg-[#fff0e7] text-[#d06531]" : "bg-[#edf6f1] text-[#3b815f]"}`}
-                      >
-                        {conversation.status}
-                      </span>
-                      {conversation.unread > 0 && (
-                        <span className="grid h-5 w-5 place-items-center rounded-full bg-[#FF8A4C] text-[10px] font-bold text-white">
-                          {conversation.unread}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                All {rows.length}
               </button>
-            ))}
-          </div>
-        </div>
-        <div className={`${selected ? "flex" : "hidden lg:flex"} flex-col bg-[#f8f7f5]`}>
-          <div className="flex min-h-[72px] items-center border-b border-[#e5e2de] bg-white px-4 sm:px-5">
-            <button className="mr-2 p-1 lg:hidden" onClick={() => setSelected(0)}>
-              <Icon name="chevron" className="h-5 w-5 rotate-180" />
-            </button>
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-[#e8e5e1] text-xs font-semibold">
-              {active.initials}
-            </span>
-            <div className="ml-3">
-              <p className="text-sm font-semibold">{active.name}</p>
-              <p className="text-xs text-[#8f8983]">WhatsApp · Active now</p>
-            </div>
-            <Button
-              className="ml-auto px-3 sm:px-4"
-              variant={takenOver ? "secondary" : "primary"}
-              onClick={() => setTakenOver(!takenOver)}
-            >
-              {takenOver ? "Return to bot" : "Take over"}
-            </Button>
-          </div>
-          {takenOver && (
-            <div className="flex items-center justify-center gap-2 border-b border-[#f4d7c5] bg-[#fff5ee] px-4 py-2 text-xs font-medium text-[#bd5e31]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#e17038]" />
-              Bot paused for this conversation — you’re replying personally
-            </div>
-          )}
-          {/* mt-auto on the first item pins short threads to the bottom; unlike justify-end,
-              a long thread still scrolls all the way up instead of being clipped at the top. */}
-          <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4 sm:p-6">
-            <div className="mx-auto mt-auto rounded-full bg-[#eae7e3] px-3 py-1 text-[10px] font-semibold text-[#817b75]">
-              TODAY
-            </div>
-            <Message time="10:36" text="Hi, do you deliver orders outside Colombo?" />
-            <Message
-              bot
-              time="10:36"
-              text="Yes, we deliver island-wide. Delivery usually takes 2–4 working days depending on your location."
-            />
-            <Message
-              time="10:40"
-              text="Can you deliver to Kandy by Friday? I need 3 packs of cinnamon sticks."
-            />
-            <div className="mx-auto my-1 flex items-center gap-2 rounded-full bg-[#fff0e7] px-3 py-1.5 text-[10px] font-semibold text-[#cb6332]">
-              <Icon name="phone" className="h-3 w-3" />
-              Bot handed this over to you
-            </div>
-            {sent.map((message, i) => (
-              <Message key={i} owner time="Now" text={message} />
-            ))}
-          </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (reply.trim()) {
-                setSent([...sent, reply]);
-                setReply("");
-              }
-            }}
-            className="border-t border-[#e5e2de] bg-white p-3 sm:p-4"
-          >
-            {!takenOver ? (
               <button
-                type="button"
-                onClick={() => setTakenOver(true)}
-                className="w-full rounded-xl border border-dashed border-[#e0b79f] bg-[#fffaf7] py-3 text-sm font-semibold text-[#ce6634]"
+                onClick={() => setFilter("needs")}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold ${filter === "needs" ? "bg-[#e8743b] text-white" : "bg-[#fff0e7] text-[#cf6531]"}`}
               >
-                Take over to reply to this customer
+                Needs you {needsYou}
               </button>
-            ) : (
-              <div className="flex items-center gap-2">
-                <input
-                  value={reply}
-                  onChange={(e) => setReply(e.target.value)}
-                  autoFocus
-                  placeholder="Write a reply..."
-                  className="min-w-0 flex-1 rounded-xl border border-[#dedbd7] px-4 py-3 text-sm outline-none focus:border-[#f09a6d]"
-                />
-                <button
-                  type="submit"
-                  aria-label="Send reply"
-                  className="grid h-11 w-11 place-items-center rounded-xl bg-[#FF8A4C] text-white"
-                >
-                  <Icon name="send" className="h-5 w-5" />
-                </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 divide-y divide-[#eeece9] overflow-y-auto">
+            {list.error && !list.data && (
+              <div className="p-4">
+                <ErrorNote>{list.error}</ErrorNote>
               </div>
             )}
-          </form>
+            {!connected ? (
+              <EmptyState icon="chat" title="Not connected" text="Conversations show here once the WhatsApp engine is running." />
+            ) : list.data && rows.length === 0 ? (
+              <EmptyState
+                icon="chat"
+                title="No conversations yet"
+                text="When a customer messages your WhatsApp number, the chat shows up here."
+              />
+            ) : list.data && shown.length === 0 ? (
+              <EmptyState icon="search" title="Nothing matches" text="Try another name or number, or show all chats." />
+            ) : (
+              shown.map((c) => (
+                <ConversationRow
+                  key={c.wa_id}
+                  conversation={c}
+                  active={selected === c.wa_id}
+                  onClick={() => {
+                    setSelected(c.wa_id);
+                    setActionError(null);
+                  }}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className={`${selected ? "flex" : "hidden lg:flex"} min-h-0 flex-col bg-[#f8f7f5]`}>
+          {!contact ? (
+            <div className="m-auto">
+              <EmptyState icon="chat" title="No chat open" text="Pick a conversation to read it and reply." />
+            </div>
+          ) : (
+            <>
+              <div className="flex min-h-[72px] items-center border-b border-[#e5e2de] bg-white px-4 sm:px-5">
+                <button
+                  aria-label="Back to the list"
+                  className="mr-2 p-1 lg:hidden"
+                  onClick={() => setSelected(null)}
+                >
+                  <Icon name="chevron" className="h-5 w-5 rotate-180" />
+                </button>
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e8e5e1] text-xs font-semibold">
+                  {contactInitials(contact)}
+                </span>
+                <div className="ml-3 min-w-0">
+                  <p className="truncate text-sm font-semibold">{contactName(contact)}</p>
+                  <p className="truncate text-xs text-[#8f8983]">
+                    WhatsApp{contact.name ? ` · ${formatPhone(contact.wa_id)}` : ""}
+                  </p>
+                </div>
+                <Button
+                  className="ml-auto shrink-0 px-3 sm:px-4"
+                  variant={paused ? "secondary" : "primary"}
+                  disabled={busy}
+                  onClick={() => act(() => (paused ? api.handBack(contact.wa_id) : api.takeOver(contact.wa_id)))}
+                >
+                  {paused ? "Return to bot" : "Take over"}
+                </Button>
+              </div>
+              {paused && (
+                <div className="flex items-start justify-center gap-2 border-b border-[#f4d7c5] bg-[#fff5ee] px-4 py-2 text-xs font-medium text-[#bd5e31]">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#e17038]" />
+                  <span className="whitespace-pre-line">
+                    Bot paused for this conversation — you’re replying personally.
+                    {contact.paused_reason ? `\n${contact.paused_reason}` : ""}
+                  </span>
+                </div>
+              )}
+              <Thread messages={detail.data?.messages ?? null} error={detail.error} />
+              <Composer
+                key={contact.wa_id}
+                paused={paused}
+                busy={busy}
+                error={actionError}
+                onTakeOver={() => act(() => api.takeOver(contact.wa_id))}
+                onSend={(text) => act(() => api.reply(contact.wa_id, text))}
+              />
+            </>
+          )}
         </div>
       </div>
     </>
   );
 }
 
-function Message({
-  text,
-  time,
-  bot,
-  owner,
+function ConversationRow({
+  conversation: c,
+  active,
+  onClick,
 }: {
-  text: string;
-  time: string;
-  bot?: boolean;
-  owner?: boolean;
+  conversation: ConversationSummary;
+  active: boolean;
+  onClick: () => void;
 }) {
+  const preview = c.last_body?.trim() || mediaLabel(c.last_type) || "No messages yet";
   return (
-    <div className={`max-w-[82%] ${bot || owner ? "ml-auto" : ""}`}>
-      <div
-        className={`rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${owner ? "rounded-br-sm bg-[#FF8A4C] text-white" : bot ? "rounded-br-sm bg-[#dff4e8] text-[#373a38]" : "rounded-bl-sm bg-white text-[#403d3a]"}`}
-      >
-        {text}
+    <button
+      onClick={onClick}
+      className={`w-full p-4 text-left transition hover:bg-[#faf9f7] ${active ? "bg-[#fff8f3] shadow-[inset_3px_0_0_#FF8A4C]" : ""}`}
+    >
+      <div className="flex gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e8e5e1] text-xs font-semibold text-[#5d5853]">
+          {contactInitials(c)}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <p className="truncate text-sm font-semibold">{contactName(c)}</p>
+            <span className="shrink-0 text-[10px] text-[#9d9791]">{shortTime(c.last_at)}</span>
+          </div>
+          <p className="mt-1 truncate text-xs text-[#827c76]">
+            {c.last_direction === "out" ? "↪ " : ""}
+            {preview}
+          </p>
+          <div className="mt-2">
+            <span
+              className={`rounded-full px-2 py-1 text-[10px] font-semibold ${c.bot_paused ? "bg-[#fff0e7] text-[#d06531]" : "bg-[#edf6f1] text-[#3b815f]"}`}
+            >
+              {c.bot_paused ? "Needs you" : "Bot handling"}
+            </span>
+          </div>
+        </div>
       </div>
-      <p className={`mt-1 text-[10px] text-[#9c9690] ${bot || owner ? "text-right" : ""}`}>
-        {bot ? "Catalyst bot · " : owner ? "You · " : ""}
-        {time}
+    </button>
+  );
+}
+
+function Thread({ messages, error }: { messages: Message[] | null; error: string | null }) {
+  const end = useRef<HTMLDivElement>(null);
+  const lastId = messages?.[messages.length - 1]?.id;
+  // Jump to the newest message when the chat opens or a new one arrives.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [lastId]);
+
+  return (
+    // mt-auto on the first item pins short threads to the bottom; unlike justify-end,
+    // a long thread still scrolls all the way up instead of being clipped at the top.
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 sm:p-6">
+      <div className="mt-auto" />
+      {error && !messages && <ErrorNote>{error}</ErrorNote>}
+      {messages?.length === 0 && <p className="mx-auto text-xs text-[#9c9690]">No messages in this chat yet.</p>}
+      {messages?.map((m, i) => {
+        const newDay = i === 0 || dayLabel(m.created_at) !== dayLabel(messages[i - 1].created_at);
+        return (
+          <div key={m.id} className="flex flex-col gap-3">
+            {newDay && (
+              <div className="mx-auto rounded-full bg-[#eae7e3] px-3 py-1 text-[10px] font-semibold uppercase text-[#817b75]">
+                {dayLabel(m.created_at)}
+              </div>
+            )}
+            <MessageBubble message={m} />
+          </div>
+        );
+      })}
+      <div ref={end} />
+    </div>
+  );
+}
+
+function MessageBubble({ message: m }: { message: Message }) {
+  const from = m.direction === "in" ? "customer" : m.sent_by === "teacher" ? "owner" : "bot";
+  const media = mediaLabel(m.type);
+  const failed = m.status === "failed" || m.status === "not_sent";
+  return (
+    <div className={`max-w-[82%] ${from === "customer" ? "" : "ml-auto"}`}>
+      <div
+        className={`whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${from === "owner" ? "rounded-br-sm bg-[#FF8A4C] text-white" : from === "bot" ? "rounded-br-sm bg-[#dff4e8] text-[#373a38]" : "rounded-bl-sm bg-white text-[#403d3a]"}`}
+      >
+        {media && (
+          <span className={`block text-xs font-semibold ${m.body ? "mb-1" : ""} opacity-70`}>{media}</span>
+        )}
+        {m.body}
+      </div>
+      <p className={`mt-1 text-[10px] text-[#9c9690] ${from === "customer" ? "" : "text-right"}`}>
+        {from === "bot" ? "Catalyst bot · " : from === "owner" ? "You · " : ""}
+        {clock(m.created_at)}
+        {failed && (
+          <span className="font-semibold text-[#c2433b]" title={m.error ?? undefined}>
+            {" "}
+            · Not delivered
+          </span>
+        )}
+        {m.agent_error && <span className="text-[#c2433b]"> · AI failed, fallback sent</span>}
       </p>
     </div>
   );
 }
 
-function SettingsPage() {
-  const [botOn, setBotOn] = useState(true);
-  const [languages, setLanguages] = useState(["English", "Sinhala"]);
-  const [saved, setSaved] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const markDirty = () => {
-    setDirty(true);
-    setSaved(false);
-  };
-  const toggleLanguage = (language: string) => {
-    markDirty();
-    setLanguages(
-      languages.includes(language)
-        ? languages.filter((l) => l !== language)
-        : [...languages, language],
-    );
-  };
+function Composer({
+  paused,
+  busy,
+  error,
+  onTakeOver,
+  onSend,
+}: {
+  paused: boolean;
+  busy: boolean;
+  error: string | null;
+  onTakeOver: () => void;
+  onSend: (text: string) => Promise<boolean>;
+}) {
+  const [reply, setReply] = useState("");
   return (
-    // Typing in any field or ticking a box bubbles a change event up to here.
-    // While the save bar is showing, extra bottom padding keeps it off the last cards.
-    <div onChange={markDirty} className={dirty ? "pb-24" : ""}>
-      <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-[-.03em] md:text-[28px]">Bot settings</h2>
-          <p className="mt-1 text-sm text-[#77716c]">
-            Teach Catalyst how your business works and when to hand over.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 rounded-xl border border-[#dfdcd8] bg-white px-4 py-2.5">
-          <div>
-            <p className="text-xs font-semibold">Bot is {botOn ? "on" : "paused"}</p>
-            <p className="text-[10px] text-[#9b958f]">
-              {botOn ? "Replying to customers" : "Not sending replies"}
-            </p>
-          </div>
-          <Switch
-            on={botOn}
-            setOn={(on) => {
-              setBotOn(on);
-              markDirty();
-            }}
-          />
-        </div>
-      </div>
-      {saved && (
-        <div className="mb-4 flex items-center gap-2 rounded-xl bg-[#eaf7f0] px-4 py-3 text-sm font-medium text-[#267b55]">
-          <Icon name="check" className="h-4 w-4" />
-          Settings saved successfully
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const text = reply.trim();
+        if (text && (await onSend(text))) setReply("");
+      }}
+      className="border-t border-[#e5e2de] bg-white p-3 sm:p-4"
+    >
+      {error && (
+        <div className="mb-3">
+          <ErrorNote>{error}</ErrorNote>
         </div>
       )}
-      <div className="grid items-start gap-5 lg:grid-cols-[1fr_330px]">
+      {!paused ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onTakeOver}
+          className="w-full rounded-xl border border-dashed border-[#e0b79f] bg-[#fffaf7] py-3 text-sm font-semibold text-[#ce6634] disabled:opacity-50"
+        >
+          Take over to reply to this customer
+        </button>
+      ) : (
+        <div className="flex items-center gap-2">
+          <input
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            maxLength={4096}
+            placeholder="Write a reply..."
+            className="min-w-0 flex-1 rounded-xl border border-[#dedbd7] px-4 py-3 text-sm outline-none focus:border-[#f09a6d]"
+          />
+          <button
+            type="submit"
+            aria-label="Send reply"
+            disabled={busy || !reply.trim()}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#FF8A4C] text-white disabled:opacity-50"
+          >
+            <Icon name="send" className="h-5 w-5" />
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bot settings
+
+function SettingsPage({ connected, onSaved }: { connected: boolean; onSaved: () => void }) {
+  const settings = useLoad<SettingsData>(connected ? api.settings : null);
+  const profile = settings.data?.tutor ?? null;
+  const [name, setName] = useState("");
+  const [payment, setPayment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Faq | "new" | null>(null);
+
+  // Fill the form from the engine whenever it (re)loads.
+  useEffect(() => {
+    setName(profile?.name ?? "");
+    setPayment(profile?.payment_instructions ?? "");
+  }, [profile]);
+
+  const dirty = connected && (name !== (profile?.name ?? "") || payment !== (profile?.payment_instructions ?? ""));
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      // bio and qualifications aren't on this page; send them back unchanged.
+      const next: BusinessProfile = {
+        name: name.trim(),
+        bio: profile?.bio ?? null,
+        qualifications: profile?.qualifications ?? null,
+        payment_instructions: payment.trim() || null,
+      };
+      const savedProfile = await api.saveProfile(next);
+      settings.setData((s) => (s ? { ...s, tutor: savedProfile } : s));
+      setSaved(true);
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const faqs = settings.data?.faqs ?? [];
+
+  return (
+    // While the save bar is showing, extra bottom padding keeps it off the last cards.
+    <div className={dirty ? "pb-24" : ""}>
+      <PageHeading title="Bot settings" text="Teach Catalyst how your business works and when to hand over.">
+        <div className="flex items-center gap-3 rounded-xl border border-[#dfdcd8] bg-white px-4 py-2.5">
+          <div>
+            <p className="text-xs font-semibold">Bot on for everyone</p>
+            <p className="text-[10px] text-[#9b958f]">Pause single chats from Conversations</p>
+          </div>
+          <NotConnected />
+        </div>
+      </PageHeading>
+
+      {!connected && (
+        <div className="mb-4">
+          <ErrorNote>Not connected to the WhatsApp engine, so settings can't be loaded or saved.</ErrorNote>
+        </div>
+      )}
+      {settings.error && (
+        <div className="mb-4">
+          <ErrorNote>{settings.error}</ErrorNote>
+        </div>
+      )}
+      {saved && !dirty && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl bg-[#eaf7f0] px-4 py-3 text-sm font-medium text-[#267b55]">
+          <Icon name="check" className="h-4 w-4" />
+          Settings saved. The bot uses them from the next message.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_330px]">
         <div className="space-y-5">
           <SettingsCard
             icon="store"
@@ -1190,77 +1178,93 @@ function SettingsPage() {
             subtitle="Details the bot uses to answer common questions."
           >
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Business name" defaultValue={account.businessName} />
-              <Field label="Opening hours" defaultValue="Mon–Sat, 9:00 AM–7:00 PM" />
-              <Field label="Location" defaultValue="42 Galle Road, Colombo 04" icon="pin" />
+              <Field
+                label="Business name"
+                value={name}
+                onChange={(v) => {
+                  setName(v);
+                  setSaved(false);
+                }}
+                disabled={!connected}
+              />
               <Field
                 label="Payment details"
-                defaultValue="Cash, card or bank transfer"
+                value={payment}
+                onChange={(v) => {
+                  setPayment(v);
+                  setSaved(false);
+                }}
+                placeholder="e.g. Bank transfer to …"
                 icon="card"
+                disabled={!connected}
               />
             </div>
-            <div className="mt-4">
-              <Field
-                label="Delivery information"
-                defaultValue="Island-wide delivery in 2–4 working days. Colombo: Rs 350, other areas: Rs 500."
-                icon="truck"
-              />
+            <div className="mt-5 rounded-xl border border-dashed border-[#e3dfda] p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-[#5b5651]">More details</p>
+                <NotConnected />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Opening hours" disabled />
+                <Field label="Location" icon="pin" disabled />
+              </div>
+              <div className="mt-4">
+                <Field label="Delivery information" icon="truck" disabled />
+              </div>
             </div>
           </SettingsCard>
+
           <SettingsCard
             icon="chat"
             title="Frequently asked questions"
-            subtitle="Add answers your bot can use with customers."
+            subtitle="Answers the bot can give customers. Changes save straight away."
           >
+            {connected && settings.data && faqs.length === 0 && (
+              <p className="text-sm text-[#8a847e]">No FAQs yet.</p>
+            )}
             <div className="space-y-3">
-              {[
-                {
-                  q: "Do you offer cash on delivery?",
-                  a: "Yes, cash on delivery is available for orders under Rs 10,000.",
-                },
-                {
-                  q: "Can I return a product?",
-                  a: "Unopened products can be returned within 7 days with the receipt.",
-                },
-              ].map((faq, i) => (
-                <div key={faq.q} className="rounded-xl border border-[#e7e3df] bg-[#faf9f7] p-4">
+              {faqs.map((faq, i) => (
+                <div key={faq.id} className="rounded-xl border border-[#e7e3df] bg-[#faf9f7] p-4">
                   <div className="flex justify-between">
                     <span className="text-[10px] font-semibold uppercase tracking-[.1em] text-[#99928c]">
                       Question {i + 1}
                     </span>
-                    <button className="text-xs font-semibold text-[#d06735]">Edit</button>
+                    <button onClick={() => setEditing(faq)} className="text-xs font-semibold text-[#d06735]">
+                      Edit
+                    </button>
                   </div>
-                  <p className="mt-2 text-sm font-semibold">{faq.q}</p>
-                  <p className="mt-1 text-sm leading-relaxed text-[#77716b]">{faq.a}</p>
+                  <p className="mt-2 text-sm font-semibold">{faq.question}</p>
+                  <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-[#77716b]">{faq.answer}</p>
                 </div>
               ))}
             </div>
-            <button className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#d96833]">
+            <button
+              disabled={!connected}
+              onClick={() => setEditing("new")}
+              className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#d96833] disabled:opacity-40"
+            >
               <Icon name="plus" className="h-4 w-4" />
-              Add another FAQ
+              Add an FAQ
             </button>
           </SettingsCard>
         </div>
+
         <div className="space-y-5">
           <SettingsCard
             icon="chat"
             title="Reply languages"
-            subtitle="Catalyst will reply in the customer’s language."
+            subtitle="Catalyst replies in the language each customer writes in."
+            badge={<NotConnected />}
           >
             <div className="space-y-2">
               {["Sinhala", "Tamil", "English"].map((language) => (
-                <button
+                <div
                   key={language}
-                  onClick={() => toggleLanguage(language)}
-                  className="flex w-full items-center justify-between rounded-xl border border-[#e5e1dd] px-4 py-3 text-sm font-medium"
+                  className="flex w-full items-center justify-between rounded-xl border border-[#e5e1dd] px-4 py-3 text-sm font-medium text-[#9a948e]"
                 >
                   <span>{language}</span>
-                  <span
-                    className={`grid h-5 w-5 place-items-center rounded-md border ${languages.includes(language) ? "border-[#FF8A4C] bg-[#FF8A4C] text-white" : "border-[#ccc7c1]"}`}
-                  >
-                    {languages.includes(language) && <Icon name="check" className="h-3.5 w-3.5" />}
-                  </span>
-                </button>
+                  <span className="grid h-5 w-5 place-items-center rounded-md border border-[#dcd8d3]" />
+                </div>
               ))}
             </div>
           </SettingsCard>
@@ -1268,49 +1272,121 @@ function SettingsPage() {
             icon="phone"
             title="Handover"
             subtitle="Where and when Catalyst should ask you to step in."
+            badge={<NotConnected />}
           >
-            <Field label="WhatsApp handover number" defaultValue="+94 77 123 4567" />
+            <Field label="WhatsApp handover number" disabled />
             <p className="mb-2 mt-5 text-xs font-semibold text-[#5b5651]">Hand over when</p>
             <div className="space-y-3">
-              {[
-                "Customer asks to speak to a person",
-                "Bot is unsure of the answer",
-                "Bulk order over 10 items",
-              ].map((rule) => (
-                <label
-                  key={rule}
-                  className="flex items-start gap-3 text-sm leading-snug text-[#635e59]"
-                >
-                  <input
-                    type="checkbox"
-                    defaultChecked
-                    className="mt-0.5 h-4 w-4 accent-[#FF8A4C]"
-                  />
-                  {rule}
-                </label>
-              ))}
+              {["Customer asks to speak to a person", "Bot is unsure of the answer", "Bulk order over 10 items"].map(
+                (rule) => (
+                  <label key={rule} className="flex items-start gap-3 text-sm leading-snug text-[#9a948e]">
+                    <input type="checkbox" disabled className="mt-0.5 h-4 w-4" />
+                    {rule}
+                  </label>
+                ),
+              )}
             </div>
           </SettingsCard>
         </div>
       </div>
+
       {dirty && (
         <div className="fixed inset-x-4 bottom-20 z-30 flex items-center justify-between gap-3 rounded-2xl border border-[#e3dfdb] bg-white/95 py-3 pl-4 pr-3 shadow-[0_-4px_20px_rgba(30,28,25,.08)] backdrop-blur md:inset-x-7 lg:bottom-6 lg:left-[calc(var(--sidebar-w)+36px)] lg:right-9">
-          <span className="flex items-center gap-2 text-sm font-medium text-[#5b5651]">
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#5b5651]">
             <span className="h-2 w-2 shrink-0 rounded-full bg-[#FF8A4C]" />
-            You have unsaved changes
+            <span className="truncate">{error ?? "You have unsaved changes"}</span>
           </span>
-          <Button
-            onClick={() => {
-              setDirty(false);
-              setSaved(true);
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
-          >
-            Save
-          </Button>
+          <div className="flex shrink-0 gap-2">
+            <Button
+              variant="ghost"
+              disabled={saving}
+              onClick={() => {
+                setName(profile?.name ?? "");
+                setPayment(profile?.payment_instructions ?? "");
+                setError(null);
+              }}
+            >
+              Discard
+            </Button>
+            <Button disabled={saving || !name.trim()} onClick={save}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
         </div>
       )}
+
+      {editing && (
+        <FaqEditor
+          faq={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onDone={() => {
+            setEditing(null);
+            settings.reload();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function FaqEditor({ faq, onClose, onDone }: { faq: Faq | null; onClose: () => void; onDone: () => void }) {
+  const [question, setQuestion] = useState(faq?.question ?? "");
+  const [answer, setAnswer] = useState(faq?.answer ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onDone();
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={faq ? "Edit FAQ" : "Add an FAQ"} onClose={onClose}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          run(() => api.saveFaq(faq?.id ?? null, { question: question.trim(), answer: answer.trim() }));
+        }}
+        className="space-y-4"
+      >
+        <Field label="Question" value={question} onChange={setQuestion} placeholder="e.g. Do you deliver?" />
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold text-[#5b5651]">Answer</span>
+          <textarea
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            rows={4}
+            className="w-full rounded-xl border border-[#dedbd7] px-3 py-2.5 text-sm outline-none focus:border-[#ed9a70] focus:ring-2 focus:ring-[#fff0e8]"
+          />
+        </label>
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <div className="flex items-center gap-2 pt-2">
+          {faq && (
+            <Button
+              variant="ghost"
+              className="text-[#c2433b]"
+              disabled={busy}
+              onClick={() => {
+                if (window.confirm("Delete this FAQ? The bot stops using it straight away.")) run(() => api.deleteFaq(faq.id));
+              }}
+            >
+              Delete
+            </Button>
+          )}
+          <Button variant="secondary" className="ml-auto" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={busy || !question.trim() || !answer.trim()}>
+            {busy ? "Saving…" : "Save FAQ"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -1318,11 +1394,13 @@ function SettingsCard({
   icon,
   title,
   subtitle,
+  badge,
   children,
 }: {
   icon: IconName;
   title: string;
   subtitle: string;
+  badge?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -1331,8 +1409,11 @@ function SettingsCard({
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#fff1e8] text-[#df6e37]">
           <Icon name={icon} className="h-5 w-5" />
         </span>
-        <div>
-          <h3 className="font-semibold">{title}</h3>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-semibold">{title}</h3>
+            {badge}
+          </div>
           <p className="mt-0.5 text-xs leading-relaxed text-[#918b85]">{subtitle}</p>
         </div>
       </div>
@@ -1341,41 +1422,34 @@ function SettingsCard({
   );
 }
 
-function Switch({ on, setOn }: { on: boolean; setOn: (on: boolean) => void }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={on}
-      onClick={() => setOn(!on)}
-      className={`relative h-6 w-11 rounded-full transition ${on ? "bg-[#45a879]" : "bg-[#c8c5c1]"}`}
-    >
-      <span
-        className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${on ? "left-6" : "left-1"}`}
-      />
-    </button>
-  );
-}
-
 function Field({
   label,
+  value,
+  onChange,
   placeholder,
-  defaultValue,
   icon,
+  disabled = false,
 }: {
   label: string;
+  value?: string;
+  onChange?: (value: string) => void;
   placeholder?: string;
-  defaultValue?: string;
   icon?: IconName;
+  disabled?: boolean;
 }) {
   return (
     <label className="block">
       <span className="mb-1.5 block text-xs font-semibold text-[#5b5651]">{label}</span>
-      <span className="flex items-center gap-2 rounded-xl border border-[#dedbd7] bg-white px-3 focus-within:border-[#ed9a70] focus-within:ring-2 focus-within:ring-[#fff0e8]">
+      <span
+        className={`flex items-center gap-2 rounded-xl border border-[#dedbd7] px-3 focus-within:border-[#ed9a70] focus-within:ring-2 focus-within:ring-[#fff0e8] ${disabled ? "bg-[#f7f6f4]" : "bg-white"}`}
+      >
         {icon && <Icon name={icon} className="h-4 w-4 text-[#9a948e]" />}
         <input
+          value={value ?? ""}
+          onChange={(e) => onChange?.(e.target.value)}
           placeholder={placeholder}
-          defaultValue={defaultValue}
-          className="min-w-0 w-full bg-transparent py-2.5 text-sm outline-none placeholder:text-[#aaa59f]"
+          disabled={disabled}
+          className="min-w-0 w-full bg-transparent py-2.5 text-sm outline-none placeholder:text-[#aaa59f] disabled:cursor-not-allowed"
         />
       </span>
     </label>
@@ -1396,7 +1470,7 @@ function Modal({
       <div className="w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-md sm:rounded-2xl">
         <div className="mb-5 flex items-center justify-between">
           <h3 className="text-lg font-semibold">{title}</h3>
-          <button onClick={onClose} className="rounded-lg p-2 text-[#777] hover:bg-[#f3f1ee]">
+          <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-[#777] hover:bg-[#f3f1ee]">
             <Icon name="close" className="h-5 w-5" />
           </button>
         </div>
@@ -1406,18 +1480,136 @@ function Modal({
   );
 }
 
+// ---------------------------------------------------------------------------------------------
+// Sign-in (only when the engine has ADMIN_TOKEN set)
+
+function SignIn({ onDone }: { onDone: () => void }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="grid min-h-screen place-items-center bg-[#1A1A1A] p-4">
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            await signIn(key.trim());
+            onDone();
+          } catch (err) {
+            setError((err as Error).message);
+            setBusy(false);
+          }
+        }}
+        className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
+      >
+        <div className="mb-6 w-fit rounded-xl bg-[#1A1A1A] p-2 pr-3">
+          <Logo />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
+        <p className="mt-1 text-sm text-[#77716c]">Enter the access key (ADMIN_TOKEN) set on the server.</p>
+        <label className="mt-5 block">
+          <span className="mb-1.5 block text-xs font-semibold text-[#5b5651]">Access key</span>
+          <input
+            type="password"
+            autoFocus
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            className="w-full rounded-xl border border-[#dedbd7] px-3 py-2.5 text-sm outline-none focus:border-[#ed9a70] focus:ring-2 focus:ring-[#fff0e8]"
+          />
+        </label>
+        {error && (
+          <div className="mt-3">
+            <ErrorNote>{error}</ErrorNote>
+          </div>
+        )}
+        <Button type="submit" className="mt-5 w-full" disabled={busy || !key.trim()}>
+          {busy ? "Checking…" : "Sign in"}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// App
+
+// The open page lives in the URL hash (#conversations), so a refresh or a shared link keeps it.
+const pageFromHash = (): Page => {
+  const id = window.location.hash.slice(1);
+  return navItems.some((item) => item.id === id) ? (id as Page) : "overview";
+};
+
 export default function App() {
-  const [page, setPage] = useState<Page>("products");
+  const [page, setPageState] = useState<Page>(pageFromHash);
+  const setPage = useCallback((p: Page) => {
+    setPageState(p);
+    window.history.replaceState(null, "", `#${p}`);
+  }, []);
+  // checking -> ready (or signin when the server wants a key), offline when the engine can't be reached.
+  const [state, setState] = useState<"checking" | "offline" | "signin" | "ready">("checking");
+
+  const connect = useCallback(async () => {
+    setState("checking");
+    try {
+      const required = await authRequired();
+      setState(required && !hasKey() ? "signin" : "ready");
+    } catch {
+      setState("offline");
+    }
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      signOut();
+      setState("signin");
+    });
+    connect();
+  }, [connect]);
+
   // Each page opens at the top; otherwise the old scroll position leaves its first rows under the sticky header.
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [page]);
+
+  const connected = state === "ready";
+  const overview = useLoad(connected ? api.overview : null, { every: 15_000 });
+  const connection: Connection =
+    state === "checking" ? "checking" : connected && !overview.error ? "live" : "offline";
+
+  if (state === "signin") return <SignIn onDone={() => setState("ready")} />;
+
   return (
-    <AppShell page={page} setPage={setPage}>
+    <AppShell
+      page={page}
+      setPage={setPage}
+      businessName={overview.data?.tutor?.name ?? null}
+      needsYou={overview.data?.counts.paused ?? 0}
+      connection={connection}
+    >
+      {(state === "offline" || (connected && overview.error)) && (
+        <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[#e4e1dd] bg-white p-4 sm:flex-row sm:items-center">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#f3f1ee] text-[#8a847e]">
+            <Icon name="alert" />
+          </span>
+          <div className="min-w-0">
+            <p className="font-semibold">Not connected to the WhatsApp engine</p>
+            <p className="mt-0.5 text-sm text-[#7e7771]">
+              {overview.error ?? "Start it with npm start in the project folder, then try again."}
+            </p>
+          </div>
+          <Button variant="secondary" className="sm:ml-auto" onClick={connected ? overview.reload : connect}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {page === "overview" && (
+        <OverviewPage overview={overview.data} onViewConversations={() => setPage("conversations")} />
+      )}
       {page === "products" && <ProductsPage />}
-      {page === "overview" && <OverviewPage onViewConversations={() => setPage("conversations")} />}
-      {page === "conversations" && <ConversationsPage />}
-      {page === "settings" && <SettingsPage />}
+      {page === "conversations" && <ConversationsPage connected={connected} onChanged={overview.reload} />}
+      {page === "settings" && <SettingsPage connected={connected} onSaved={overview.reload} />}
     </AppShell>
   );
 }

@@ -7,12 +7,18 @@ import path from "node:path";
 import siteConfiguration from "./.figma/make/site.json";
 
 // Vite config — https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   // .figma/make/deploy-preview passes `--mode development` for cached-preview builds.
   const emitSourcemaps = mode === "development";
 
   return {
-    base: process.env.FIGMA_PUBLIC_URL ? `${process.env.FIGMA_PUBLIC_URL}/` : "/",
+    // Figma Make previews use their own URL. Otherwise `npm run web:build` makes the build that
+    // the engine (admin/api.js) serves at /admin/.
+    base: process.env.FIGMA_PUBLIC_URL
+      ? `${process.env.FIGMA_PUBLIC_URL}/`
+      : command === "build"
+        ? "/admin/"
+        : "/",
     build: {
       sourcemap: emitSourcemaps ? "inline" : false,
       minify: !emitSourcemaps,
@@ -37,6 +43,10 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       watch: {
         ignored: ["**/.figma/**"],
+      },
+      // In local dev (npm run web:dev) API calls go to the running engine (npm start).
+      proxy: {
+        "/admin/api": process.env.CATALYST_API_URL || "http://localhost:3000",
       },
     },
     preview: {

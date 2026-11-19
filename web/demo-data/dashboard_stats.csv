@@ -1,0 +1,16 @@
+﻿page,metric,value,note
+Overview,Messages answered today,38,+12% from yesterday
+Overview,Customers helped this week,127,Across 183 conversations
+Overview,Conversations this week,183,
+Overview,Handed over to you,9,3 still need a reply
+Overview,Messages answered this week,214,Your week with Catalyst
+Overview,Hours saved this week,3.5,About 3.5 hours saved
+Overview,Conversations needing attention,3,Customers are waiting for a personal reply
+Overview,Trial progress (%),72,Progress bar on the weekly card
+Header,Trial days left,5,Trial: 5 days left
+Sidebar,Conversations badge,3,Unread count on Conversations
+Conversations,All conversations,12,All 12 filter
+Conversations,Needs you,3,Needs you 3 filter
+Products,Product count,48,Your products 48 (only 5 are listed)
+Products,Last synced,10 min ago,
+Products,Import preview: products found,48,"Price column = 'Selling Price', Stock column = 'Qty'"
