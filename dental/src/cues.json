@@ -1,0 +1,61 @@
+{
+  "fps": 30,
+  "beat": 18,
+  "total": 1368,
+  "scenes": {
+    "hook": [0, 216],
+    "turn": [216, 360],
+    "demo": [360, 720],
+    "langs": [720, 936],
+    "urgent": [936, 1152],
+    "close": [1152, 1368]
+  },
+  "wipe": 24,
+  "hook": {
+    "title": 4,
+    "phone": 10,
+    "msgs": [36, 45, 54, 63, 72, 81, 90],
+    "cost": 126,
+    "lost": [144, 153, 162, 171, 180]
+  },
+  "turn": {
+    "mark": 4,
+    "line1": 12,
+    "line2": 36,
+    "zoom": 126
+  },
+  "demo": {
+    "phone": 0,
+    "dash": 8,
+    "ask": 36,
+    "look": 72,
+    "slots": 90,
+    "reply": 108,
+    "h2": 180,
+    "ask2": 180,
+    "booked": 216,
+    "fill": 222,
+    "toast": 234,
+    "push": 342
+  },
+  "langs": {
+    "cards": [18, 27, 36, 45, 54, 63, 72, 81, 90, 99],
+    "gap": 9,
+    "chips": 126
+  },
+  "urgent": {
+    "ask": 18,
+    "reply": 54,
+    "alert": 66,
+    "cursor": 90,
+    "tap": 126,
+    "doctor": 150
+  },
+  "close": {
+    "line": 4,
+    "line2": 18,
+    "hit": 72,
+    "chips": 96,
+    "cta": 120
+  }
+}

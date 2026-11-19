@@ -12,6 +12,7 @@ const { mediaPath, mediaDir: defaultMediaDir } = require("../bot/media");
 
 const DIST = path.join(__dirname, "..", "web", "dist");
 const MAX_JSON = 64 * 1024;
+const UNMATCHED_DAYS = 7; // how far back Payments looks for slips no fee points at
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
   ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json",
@@ -147,7 +148,21 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
     ["POST", /^\/faqs$/, (_, body) => [200, db.saveFaq(null, body)]],
     ["POST", /^\/faqs\/(\d+)$/, ([id], body) => [200, db.saveFaq(Number(id), body)]],
     ["POST", /^\/faqs\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteFaq(Number(id)) }]],
-    ["GET", /^\/payments$/, () => [200, { slips: db.listSlipsAwaitingReview(), owed: db.listOwedByContact() }]],
+    ["GET", /^\/payments$/, () => [200, {
+      slips: db.listSlipsAwaitingReview(),
+      unmatched: db.listUnmatchedSlips(new Date(Date.now() - UNMATCHED_DAYS * 86400000).toISOString().replace(/\.\d{3}Z$/, "Z")),
+      owed: db.listOwedByContact(),
+    }]],
+    ["POST", /^\/slips\/link$/, (_, body) => {
+      const r = db.linkSlip(String(body.media_id ?? ""), Array.isArray(body.payment_ids) ? body.payment_ids : []);
+      if (r.ok) return [200, { ok: true }];
+      const why = {
+        slip_not_found: "That photo or PDF isn't in the message log",
+        no_payments: "Pick at least one fee",
+        not_this_contact: "That fee belongs to a different contact",
+      }[r.reason] ?? "One of those fees isn't waiting for a slip any more. Refresh and try again";
+      return [r.reason === "slip_not_found" ? 404 : 409, { error: why }];
+    }],
     ["POST", /^\/payments\/(\d+)\/approve$/, ([id]) => reviewed(db.approvePayment(Number(id), tutorName()))],
     ["POST", /^\/payments\/(\d+)\/reject$/, ([id], body) => {
       const reason = String(body.reason ?? "").trim();

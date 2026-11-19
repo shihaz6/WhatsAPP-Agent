@@ -88,7 +88,7 @@ A web dashboard for the tutor, served by the same server at `http://localhost:30
 - **Overview:** messages in the last 24 hours, chats handed to the teacher, slips to review, money owed, this week's sessions (with cancellations), and each contact's language
 - **Conversations:** every chat, updated every few seconds, with filters by language and paused status. **Take over** pauses the bot so the teacher can reply from the dashboard (sent on WhatsApp from the business number); **Hand back to bot** resumes it. The language each contact uses can be changed here too
 - **Classes:** seats taken per class and the next two weeks of sessions
-- **Payments:** approve or reject slips (a rejection needs a reason, which the bot gives the parent when they ask about fees) and who still owes
+- **Payments:** approve or reject slips (a rejection needs a reason, which the bot gives the parent when they ask about fees) and who still owes. **Slips not linked to a fee** lists photos/PDFs from the last 7 days that no fee points at (unknown number, no unpaid fees, chat paused, or the photo came after the bot replied); the teacher can link one to that sender's unpaid fees, which moves it to review
 
 If `ADMIN_TOKEN` is set, every API call needs it (you type it in to sign in; it is kept only for that browser tab). If it is not set, the dashboard opens straight away with no sign-in.
 

@@ -1,0 +1,10 @@
+{
+  "description": "Manage your AI chatbot business operations with a focused dashboard for products, customer conversations, and bot settings. Track messages answered, monitor handovers, and control your bot status all in one place.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

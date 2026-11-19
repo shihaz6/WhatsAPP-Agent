@@ -12,7 +12,8 @@ function assertNotProduction() {
 }
 
 // Seeds the database that db.open() points at. `now` makes the demo dates reproducible.
-function seed({ now = new Date() } = {}) {
+function seed({ now = new Date(), testPhone = null } = {}) {
+  testPhone = testPhone ? String(testPhone).replace(/\D/g, "") || null : null;
   assertNotProduction();
   db.resetSchema();
   const conn = db.open();
@@ -120,6 +121,14 @@ function seed({ now = new Date() } = {}) {
       { id: 10, contact_id: 10, name: "Ishara Herath", grade: "A/L 2027", school: "Sirimavo Balika Vidyalaya" },
     ]);
 
+    // Your own phone, for testing slips end to end (TEST_PHONE in .env, digits only, e.g. 94771234567).
+    // A parent with one child in A/L Combined Maths: last month approved, this month due.
+    if (testPhone && !conn.prepare("SELECT 1 FROM contacts WHERE wa_id = ?").get(testPhone)) {
+      n.contacts += insert("contacts", [{ id: 11, wa_id: testPhone, name: "Test Parent", kind: "parent" }]);
+      n.students += insert("students", [{ id: 11, contact_id: 11, name: "Test Student", grade: "A/L 2027", school: "Test School" }]);
+      n.testPhone = 1;
+    }
+
     n.enrollments = insert("enrollments", [
       { student_id: 1, class_id: 1, status: "active" }, { student_id: 1, class_id: 3, status: "active" },
       { student_id: 1, class_id: 4, status: "active" },
@@ -131,6 +140,7 @@ function seed({ now = new Date() } = {}) {
       { student_id: 5, class_id: 1, status: "active" }, { student_id: 5, class_id: 4, status: "cancelled" },
       { student_id: 6, class_id: 6, status: "active" },
       { student_id: 7, class_id: 7, status: "active" }, { student_id: 8, class_id: 7, status: "active" },
+      ...(n.testPhone ? [{ student_id: 11, class_id: 1, status: "active" }] : []),
     ]);
 
     // Fees. Last month: approved, except Tharushi's paper class (slip rejected).
@@ -228,7 +238,9 @@ module.exports = { seed };
 
 if (require.main === module) {
   try {
-    const { counts, today, lastMonth, thisMonth } = seed();
+    try { process.loadEnvFile(require("node:path").join(__dirname, "..", ".env")); } catch { /* no .env: fine */ }
+    const { counts, today, lastMonth, thisMonth } = seed({ testPhone: process.env.TEST_PHONE });
+    if (counts.testPhone) console.log(`Added TEST_PHONE ${process.env.TEST_PHONE.replace(/\D/g, "")} as "Test Parent" with an unpaid fee this month.`);
     console.log(`Seeded ${db.open().location?.() ?? "database"} (today ${today}; months ${lastMonth} and ${thisMonth}):`);
     for (const [t, c] of Object.entries(counts)) console.log(`  ${t.padEnd(18)} ${c}`);
     db.close();

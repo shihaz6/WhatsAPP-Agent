@@ -97,6 +97,15 @@ describe("receiving a slip", () => {
   });
 });
 
+describe("seed TEST_PHONE", () => {
+  test("adds that number as a parent with a fee due this month", () => {
+    seed({ now: NOW, testPhone: "+94 77 123 4567" });
+    const c = db.getContactByWaId("94771234567");
+    assert.equal(c.name, "Test Parent");
+    assert.ok(db.listPaymentsForContact(c.id).some((p) => p.status === "due"));
+  });
+});
+
 describe("record_payment_slip", () => {
   const send = (waId) => createHandler({ db, whatsapp: fakeWhatsApp(), agent: quietAgent, log: quiet, mediaDir: dir }).handleMessage(photo(waId));
   const record = (waId, ids) => tools(waId).run("record_payment_slip", JSON.stringify({ payment_ids: ids }));
@@ -181,6 +190,60 @@ describe("the teacher sees the slip", () => {
     const auth = { headers: { Authorization: `Bearer ${TOKEN}` } };
     assert.equal((await fetch(`${base}/media/nope`, auth)).status, 404);
     assert.equal((await fetch(`${base}/media/..%2F..%2Fpackage.json`, auth)).status, 404);
+  });
+
+  const authed = (p, init = {}) => fetch(`${base}${p}`, {
+    ...init, headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json", ...init.headers },
+  });
+  const unmatched = async () => (await (await authed("/payments")).json()).unmatched;
+  const handle = (msg) => createHandler({ db, whatsapp: fakeWhatsApp(), agent: quietAgent, log: quiet, mediaDir: dir }).handleMessage(msg);
+
+  test("a slip the bot didn't link shows on Payments, with the sender's unpaid fees", async () => {
+    await start();
+    await handle(photo(FERNANDO, { caption: "Nov" }));
+    const row = (await unmatched()).find((u) => u.wa_id === FERNANDO);
+    assert.ok(row, "listed as unmatched");
+    assert.equal(row.body, "Nov");
+    assert.ok(row.media_file);
+    assert.deepEqual(row.open_fees.map((p) => p.id).sort(), due(FERNANDO).map((p) => p.id).sort());
+  });
+
+  test("an unknown number's slip and a paused chat's slip are listed too", async () => {
+    await start();
+    await handle(photo("94779999999"));
+    await handle(photo(PAUSED));
+    const rows = await unmatched();
+    const stranger = rows.find((u) => u.wa_id === "94779999999");
+    assert.ok(stranger);
+    assert.deepEqual(stranger.open_fees, []);
+    assert.ok(rows.some((u) => u.wa_id === PAUSED));
+  });
+
+  test("the teacher links it to fees; it moves to review and leaves the unmatched list", async () => {
+    await start();
+    await handle(photo(FERNANDO));
+    const { media_id } = lastIn(FERNANDO);
+    const [fee] = due(FERNANDO);
+    const res = await authed("/slips/link", { method: "POST", body: JSON.stringify({ media_id, payment_ids: [fee.id] }) });
+    assert.equal(res.status, 200);
+    assert.equal(db.getPayment(fee.id).status, "slip_received");
+    assert.ok(!(await unmatched()).some((u) => u.media_id === media_id));
+    const { slips } = await (await authed("/payments")).json();
+    assert.ok(slips.some((s) => s.id === fee.id && s.slip_file));
+  });
+
+  test("linking refuses another family's fee, a fee not awaiting a slip, and an unknown file", async () => {
+    await start();
+    await handle(photo(FERNANDO));
+    const { media_id } = lastIn(FERNANDO);
+    const other = db.listPaymentsForContact(db.getContactByWaId(PERERA).id)[0];
+    const link = (body) => authed("/slips/link", { method: "POST", body: JSON.stringify(body) });
+    assert.equal((await link({ media_id, payment_ids: [other.id] })).status, 409);
+    assert.notEqual(db.getPayment(other.id).slip_media_id, media_id);
+    const approved = db.listPaymentsForContact(db.getContactByWaId(FERNANDO).id).find((p) => p.status === "approved");
+    assert.equal((await link({ media_id, payment_ids: [approved.id] })).status, 409);
+    assert.equal((await link({ media_id, payment_ids: [] })).status, 409);
+    assert.equal((await link({ media_id: "nope", payment_ids: [1] })).status, 404);
   });
 
   test("chat messages carry the media fields the dashboard shows", async () => {

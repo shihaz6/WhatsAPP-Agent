@@ -492,6 +492,36 @@ function latestIncomingMedia(waId, sinceIso) {
                   ORDER BY rowid DESC LIMIT 1`).get(waId, sinceIso));
 }
 
+// Photos/PDFs people sent since `sinceIso` that no payment points at: a slip the bot couldn't link
+// (unknown number, no unpaid fees, chat paused, or the photo came after the bot replied). Each row
+// carries the sender's fees that can still take a slip, so the teacher can link it by hand.
+function listUnmatchedSlips(sinceIso) {
+  const rows = q(`SELECT m.id AS message_id, m.wa_id, m.media_id, m.media_mime, m.media_file, m.body, m.created_at,
+                         c.id AS contact_id, c.name
+                  FROM messages m LEFT JOIN contacts c ON c.wa_id = m.wa_id
+                  WHERE m.direction = 'in' AND m.media_id IS NOT NULL AND m.created_at >= ?
+                    AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.slip_media_id = m.media_id)
+                  ORDER BY m.created_at DESC, m.rowid DESC`).all(sinceIso).map(plain);
+  return rows.map((r) => ({
+    ...r,
+    open_fees: r.contact_id ? listPaymentsForContact(r.contact_id).filter((p) => ["due", "rejected"].includes(p.status)) : [],
+  }));
+}
+
+// The teacher links an unmatched slip to fees from the dashboard. Same rules as the bot's tool:
+// only that sender's own fees, only ones waiting for a slip.
+function linkSlip(mediaId, paymentIds) {
+  const m = q("SELECT wa_id, body FROM messages WHERE media_id = ? AND direction = 'in' LIMIT 1").get(mediaId);
+  if (!m) return { ok: false, reason: "slip_not_found" };
+  const contact = getContactByWaId(m.wa_id);
+  const mine = new Set(contact ? listPaymentsForContact(contact.id).map((p) => p.id) : []);
+  const ids = [...new Set([].concat(paymentIds).map(Number))];
+  if (!ids.length || ids.some((id) => !Number.isInteger(id))) return { ok: false, reason: "no_payments" };
+  const notMine = ids.find((id) => !mine.has(id));
+  if (notMine !== undefined) return { ok: false, reason: "not_this_contact", paymentId: notMine };
+  return submitSlip(ids, { mediaId, reference: m.body ? m.body.slice(0, 120) : null });
+}
+
 function review(paymentId, status, reviewer, note) {
   if (!reviewer) throw new Error("A review needs the reviewer's name");
   const changed = q(`UPDATE payments SET status = ?, reviewed_by = ?, reviewed_at = ${NOW_SQL}, review_note = ?
@@ -818,7 +848,7 @@ module.exports = {
   bookTrial, getTrial, listTrials, setTrialStatus,
   getPayment, listPayments, listPaymentsForContact, amountDue, amountDueForContact, generateMonthlyFees,
   submitSlip, listSlipsAwaitingReview, approvePayment, rejectPayment, waivePayment,
-  setMessageMedia, getMedia, latestIncomingMedia,
+  setMessageMedia, getMedia, latestIncomingMedia, listUnmatchedSlips, linkSlip,
   createBooking, getBooking, listBookings, setBookingStatus,
   listMaterials, listFaqs, findFaqs,
   getConversation, setConversation, logMessage, recentMessages,

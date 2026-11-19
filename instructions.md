@@ -130,6 +130,8 @@ npm run web:build     # builds the dashboard into web/dist
 
 The bot only states facts that are in the database, so replace the demo classes, fees and FAQs with the real ones before going live.
 
+**Testing payment slips from your own phone:** the demo families use made-up numbers, so your phone has no fees and a slip from it can't be linked to anything. Put `TEST_PHONE=94771234567` (your number, digits only) in `.env` before running `npm run seed`. Your number is then added as "Test Parent" with a fee due this month.
+
 ---
 
 ## 7. Start the bot
