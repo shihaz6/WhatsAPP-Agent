@@ -115,7 +115,7 @@ function createHandler({ db, whatsapp, agent, log = console, mediaDir }) {
     const to = db.getBusiness()?.handover_number;
     if (!to || to === customerWaId) return;
     const summary = db.getContactByWaId(customerWaId)?.paused_reason?.replace(/^Handed over by the bot:\n/, "") ?? "";
-    const body = `Catalyst: a customer needs you.\nFrom: +${customerWaId}\n${summary}\nReply to them from the dashboard (Conversations).`.slice(0, 4096);
+    const body = `Catalyst: a student or parent needs you.\nFrom: +${customerWaId}\n${summary}\nReply to them from the dashboard (Conversations).`.slice(0, 4096);
     try {
       await whatsapp.send(to, { type: "text", body });
     } catch (err) {

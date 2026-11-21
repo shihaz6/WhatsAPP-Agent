@@ -1,5 +1,0 @@
-﻿conversation_id,day,time,sender,text
-1,Today,10:36,customer,"Hi, do you deliver orders outside Colombo?"
-1,Today,10:36,bot,"Yes, we deliver island-wide. Delivery usually takes 2–4 working days depending on your location."
-1,Today,10:40,customer,Can you deliver to Kandy by Friday? I need 3 packs of cinnamon sticks.
-1,Today,,system,Bot handed this over to you

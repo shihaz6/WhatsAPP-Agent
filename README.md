@@ -19,15 +19,15 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 - [x] Send replies through the Graph API (`POST /{phone-number-id}/messages`): `whatsapp.js`
   - Marks incoming messages as read, replies quoting the original, ignores duplicate deliveries
 - [x] **Data model** (`db/schema.sql`, `db/index.js`), on Node's built-in SQLite in `data/catalyst.db`. Everything the owner enters on the dashboard lives here, and the bot answers only from it:
-  - **business** (one row): name, owner's name, opening hours, location, payment details, delivery info, handover number, the bot's on/off switch for everyone, currency
-  - **products**: name (unique, any case), price (whole LKR), stock (empty = not tracked), category, details, hidden-from-bot flag. Added by hand or imported from a CSV (all or nothing; a dry run previews it)
-  - **faqs**, **reply_languages** (Sinhala incl. Singlish, Tamil incl. Tanglish, English) and **handover_rules** ("Customer asks to speak to a person", "Bot is unsure of the answer", "Bulk order over 10 items")
+  - **business** (one row): institute name, owner's name, office hours, location, how fees are paid, classes and enrolment info, handover number, the bot's on/off switch for everyone, currency
+  - **products** (these are the institute's **courses**): name (unique, any case), fee (whole LKR), seats left (empty = not limited), subject / grade, details (schedule, teacher, medium), hidden-from-bot flag. Added by hand or imported from a CSV (all or nothing; a dry run previews it)
+  - **faqs**, **reply_languages** (Sinhala incl. Singlish, Tamil incl. Tanglish, English) and **handover_rules** ("Student or parent asks to speak to a person", "Bot is unsure of the answer", "Group enrolment of 5 or more students")
   - **contacts** (a WhatsApp number, its language and a `bot_paused` flag for handover) and **messages** (every message in and out, deduplicated by WhatsApp id)
   - A new database starts empty; `npm test` runs the tests on an in-memory one
-- [x] **AI agent** (`bot/`, `ai/`): a Groq model runs the conversation with the product list and business details in its prompt, and tools scoped to the sender: `search_products`, `get_business_info`, `get_faqs`, `hand_off_to_owner`
+- [x] **AI agent** (`bot/`, `ai/`): a Groq model runs the conversation with the course list and institute details in its prompt, and tools scoped to the sender: `search_courses`, `get_business_info`, `get_faqs`, `hand_off_to_owner`
   - Replies mirror the language *and script* of the latest message (English, Sinhala, Tamil, Singlish, Tanglish), limited to the reply languages the owner switched on
-  - Made-up prices and promises it can't keep (taking orders, reserving stock) are caught and the model answers again
-  - Orders, complaints, photos and the owner's handover rules hand the chat over: the bot goes quiet there, and the handover number gets a WhatsApp alert (only delivered if that number messaged the business in the last 24 hours)
+  - Made-up prices and promises it can't keep (enrolling anyone, reserving seats) are caught and the model answers again
+  - Enrolments, fee payments, complaints, photos and the owner's handover rules hand the chat over: the bot goes quiet there, and the handover number gets a WhatsApp alert (only delivered if that number messaged the business in the last 24 hours)
   - Photos and PDFs are saved in `data/media/` (`MEDIA_DIR`); the bot can't see them
 - [x] Load config from a `.env` file and add an `.env.example`
 - [ ] Deploy to a public host
@@ -48,7 +48,7 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `WHATSAPP_TOKEN` | For replies | none    | Access token from **WhatsApp → API Setup** (temporary tokens expire after 24h; use a System User token for anything longer-lived) |
 | `PHONE_NUMBER_ID` | For replies | none   | Phone number ID from **WhatsApp → API Setup** (not the phone number itself) |
 | `GRAPH_API_VERSION` | No    | `v24.0`     | Graph API version used for sending                            |
-| `AI_PROVIDER`  | No       | `gemini` if `GEMINI_API_KEY` is set, else `groq` | Which AI provider the agent uses: `gemini`, `nvidia`, `openrouter` or `groq` |
+| `AI_PROVIDER`  | No       | `gemini` if `GEMINI_API_KEY` is set, else `groq` | Which AI provider the agent uses: `gemini`, `nvidia`, `openrouter`, `groq` or `cloudflare` |
 | `GEMINI_API_KEY` | For AI replies (Gemini) | none | Google AI Studio key. Without an AI key the bot only sends a "having trouble" message |
 | `GEMINI_MODEL` | No       | `gemini-3.5-flash-lite` | Gemini model (new keys can't use 2.5 models) |
 | `NVIDIA_API_KEY` | For AI replies (NVIDIA) | none | NVIDIA API key (`nvapi-...`) |
@@ -56,6 +56,9 @@ A WhatsApp agent built on the [WhatsApp Cloud API](https://developers.facebook.c
 | `NVIDIA_REASONING_EFFORT` | No | model default | `low`/`medium`/`high` for reasoning models |
 | `OPENROUTER_API_KEY` | For AI replies (OpenRouter) | none | OpenRouter API key (`sk-or-...`) |
 | `OPENROUTER_MODEL` | No | `nvidia/nemotron-3.5-super-vl:free` | OpenRouter model; `:free` models cost nothing but have daily request limits |
+| `CLOUDFLARE_API_TOKEN` | For AI replies (Cloudflare) | none | Cloudflare API token with Workers AI Read + Edit |
+| `CLOUDFLARE_ACCOUNT_ID` | For AI replies (Cloudflare) | none | The Cloudflare account the token belongs to |
+| `CLOUDFLARE_MODEL` | No | `@cf/openai/gpt-oss-120b` | Workers AI model (needs function calling) |
 | `GROQ_API_KEY` | For AI replies (Groq) | none  | Groq API key |
 | `GROQ_MODEL`   | No       | `openai/gpt-oss-120b` | Groq model used by the agent                        |
 | `GROQ_REASONING_EFFORT` | No | Groq default | `low`/`medium`/`high` for gpt-oss models. `low` was tested and made the agent skip tools and invent classes |
@@ -68,7 +71,7 @@ Put these in a `.env` file in the project root (copy `.env.example`). The server
 With a filled-in `.env`:
 ```bash
 npm start      # creates data/catalyst.db (empty) on first run
-# then open http://localhost:3000/admin/ and add the business details, products and FAQs
+# then open http://localhost:3000/admin/ and add the institute details, courses and FAQs
 ```
 
 Or pass the variables directly:
@@ -89,10 +92,10 @@ The server starts at `http://localhost:3000/webhook`.
 
 A web dashboard for the business owner, served by the same server at `http://localhost:3000/admin/` (and through ngrok at `https://<your-ngrok-host>/admin/`). Built with React + TypeScript + Vite + Tailwind in `web/`; the API is `admin/api.js`. The sidebar collapses to an icon rail with the ☰ button, and the open page is kept in the URL (`#conversations`).
 
-- **Overview:** messages answered and received in the last 24 hours, customers, chats handed over, warnings for undelivered replies, AI failures or the bot being switched off, and a setup checklist until the business details, products and FAQs are in
-- **Products:** the products the bot offers, with search. Add or edit one at a time (price, stock or "not tracked", category, details, hidden from the bot), or upload a CSV in the template's layout: it is checked first ("48 products · 40 new · 8 updated"), nothing is saved if any row is wrong, and updates only change the columns in the file. Google Sheet sync is not built yet
+- **Overview:** messages answered and received in the last 24 hours, students and parents, chats handed over, warnings for undelivered replies, AI failures or the bot being switched off, and a setup checklist until the institute details, courses and FAQs are in
+- **Courses:** the courses the bot offers, with search. Add or edit one at a time (fee, seats left or "not limited", subject / grade, details, hidden from the bot), or upload a CSV in the template's layout: it is checked first ("48 courses · 40 new · 8 updated"), nothing is saved if any row is wrong, and updates only change the columns in the file. Google Sheet sync is not built yet
 - **Conversations:** every chat, refreshed every few seconds, with search and a "Needs you" filter. **Take over** pauses the bot so the owner can reply from the dashboard (sent on WhatsApp from the business number); **Return to bot** resumes it
-- **Bot settings:** business information, reply languages, handover number and rules (saved together, all or nothing), FAQs (saved one at a time), and the bot's on/off switch for everyone (takes effect at once)
+- **Bot settings:** institute information, reply languages, handover number and rules (saved together, all or nothing), FAQs (saved one at a time), and the bot's on/off switch for everyone (takes effect at once)
 
 If `ADMIN_TOKEN` is set, every API call needs it (you type it in to sign in; it is kept only for that browser tab). If it is not set, the dashboard opens straight away with no sign-in.
 
@@ -160,7 +163,7 @@ WhatsApp-Agent/
 │   ├── schema.sql # Tables, constraints and indexes
 │   └── index.js   # Data access and validation, used by the agent and the dashboard API
 ├── test/
-│   ├── fixtures.js   # A small fictional shop the tests start from
+│   ├── fixtures.js   # A small fictional institute the tests start from
 │   ├── db.test.js    # Data model tests (npm test)
 │   ├── bot.test.js   # Message pipeline tests (bot switch, handover alert)
 │   ├── agent.test.js # Agent loop, tools, languages, fact checks (scripted fake model)

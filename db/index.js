@@ -1,7 +1,7 @@
-// Data access for the Catalyst shop assistant, on Node's built-in SQLite (node:sqlite, Node 22.13+).
+// Data access for the Catalyst institute assistant, on Node's built-in SQLite (node:sqlite, Node 22.13+).
 // Every query lives here, so the rest of the app never writes SQL.
 //
-// What the owner enters on the dashboard (business details, products, FAQs, reply languages,
+// What the owner enters on the dashboard (institute details, courses (the products table), FAQs, reply languages,
 // handover rules) is saved through the save* functions, which validate input and throw an Error
 // with status 400 and a message meant for the owner. The bot reads the same tables.
 
@@ -28,9 +28,27 @@ function open(file) {
   connect(file);
   if (!schemaApplied) {
     db.exec(fs.readFileSync(SCHEMA, "utf8"));
+    addMissingColumns();
     schemaApplied = true;
   }
   return db;
+}
+
+// CREATE TABLE IF NOT EXISTS never changes a table that already exists, so columns added after a
+// database was created are added here. Safe to run every time.
+function addMissingColumns() {
+  const have = db.prepare("PRAGMA table_info(business)").all().map((c) => c.name);
+  for (const col of ["office_opens", "office_closes"]) {
+    if (!have.includes(col)) db.exec(`ALTER TABLE business ADD COLUMN ${col} TEXT`);
+  }
+  if (!have.includes("office_hours_preset")) {
+    db.exec("ALTER TABLE business ADD COLUMN office_hours_preset TEXT CHECK (office_hours_preset IS NULL OR office_hours_preset IN ('mon_fri_9_5', 'mon_sat_8_6', 'every_day_8_8', 'custom'))");
+  }
+  // A chip picked before the times existed: fill its times in so the times match the wording.
+  for (const [key, hours] of Object.entries(OFFICE_HOURS)) {
+    db.prepare("UPDATE business SET office_opens = ?, office_closes = ? WHERE office_hours_preset = ? AND office_opens IS NULL")
+      .run(hours.opens, hours.closes, key);
+  }
 }
 
 function close() {
@@ -111,7 +129,33 @@ function phoneDigits(v, label) {
   return digits;
 }
 
-const BUSINESS_TEXT = ["owner_name", "opening_hours", "location", "payment_details", "delivery_info", "product_sheet_url"];
+const BUSINESS_TEXT = ["owner_name", "location", "payment_details", "delivery_info", "product_sheet_url"];
+
+// The one-click office hours on the dashboard. The text is set here, not sent by the page, so
+// every save stores the same wording. "custom" means the owner typed their own (opening_hours).
+// opens / closes: the daily start and finish times the bot can quote (24-hour HH:MM).
+const OFFICE_HOURS = {
+  mon_fri_9_5: { text: "Mon–Fri, 9:00 AM–5:00 PM", opens: "09:00", closes: "17:00" },
+  mon_sat_8_6: { text: "Mon–Sat, 8:00 AM–6:00 PM", opens: "08:00", closes: "18:00" },
+  every_day_8_8: { text: "Every day, 8:00 AM–8:00 PM", opens: "08:00", closes: "20:00" },
+};
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
+// A start or finish time: "08:00" or blank (not set). Both or neither is checked by the caller.
+function clockTime(v, label) {
+  if (isBlank(v)) return null;
+  const t = text(v);
+  if (!CLOCK.test(t)) throw invalid(`${label} must be a time like 08:00 or 17:30.`);
+  return t;
+}
+// The start and finish times from a save, or {} if the save doesn't mention them.
+function officeTimes(fields) {
+  if (fields.office_opens === undefined && fields.office_closes === undefined) return {};
+  const opens = clockTime(fields.office_opens, "The opening time");
+  const closes = clockTime(fields.office_closes, "The closing time");
+  if ((opens === null) !== (closes === null)) throw invalid("Give both the opening and the closing time, or neither.");
+  if (opens && closes && opens >= closes) throw invalid("The closing time must be after the opening time.");
+  return { office_opens: opens, office_closes: closes };
+}
 
 // Saves the fields given (others are left as they are). The business name is required.
 function saveBusiness(fields = {}) {
@@ -121,6 +165,37 @@ function saveBusiness(fields = {}) {
     if (!set.name) throw invalid("The business name is required.");
   }
   for (const k of BUSINESS_TEXT) if (fields[k] !== undefined) set[k] = optionalText(fields[k]);
+  if (fields.office_hours_preset !== undefined || fields.opening_hours !== undefined) {
+    const picked = fields.office_hours_preset === "" ? null : fields.office_hours_preset;
+    const typed = fields.opening_hours !== undefined ? optionalText(fields.opening_hours) : undefined;
+    if (picked !== undefined && picked !== null && picked !== "custom" && !OFFICE_HOURS[picked]) {
+      throw invalid("Choose one of the office hours options.");
+    }
+    if (picked && picked !== "custom") {
+      // A chip sets the wording and both times; times sent with it are ignored.
+      set.office_hours_preset = picked;
+      set.opening_hours = OFFICE_HOURS[picked].text;
+      set.office_opens = OFFICE_HOURS[picked].opens;
+      set.office_closes = OFFICE_HOURS[picked].closes;
+    } else if (picked === "custom" || picked === null) {
+      // Custom, or no chip chosen: the owner's own wording and times.
+      set.office_hours_preset = picked;
+      if (typed !== undefined) set.opening_hours = typed;
+      Object.assign(set, officeTimes(fields));
+    } else {
+      // Text alone (an older form or a script): it matches a chip exactly, otherwise it's custom.
+      const chip = Object.keys(OFFICE_HOURS).find((k) => OFFICE_HOURS[k].text === typed);
+      set.opening_hours = typed;
+      set.office_hours_preset = typed ? (chip ?? "custom") : null;
+      Object.assign(set, officeTimes(fields));
+    }
+  } else if (fields.office_opens !== undefined || fields.office_closes !== undefined) {
+    // Times alone: if they no longer match the chip the owner picked, the hours are custom now.
+    Object.assign(set, officeTimes(fields));
+    const current = getBusiness();
+    const chip = OFFICE_HOURS[current?.office_hours_preset];
+    if (chip && (chip.opens !== set.office_opens || chip.closes !== set.office_closes)) set.office_hours_preset = "custom";
+  }
   if (fields.handover_number !== undefined) set.handover_number = phoneDigits(fields.handover_number, "The handover number");
   if (fields.currency !== undefined) {
     set.currency = text(fields.currency).toUpperCase();
@@ -219,12 +294,12 @@ function searchProducts(query, { limit = 20 } = {}) {
 
 function productFields(fields) {
   const name = text(fields.name);
-  if (!name) throw invalid("The product needs a name.");
-  if (name.length > 200) throw invalid("The product name is too long.");
+  if (!name) throw invalid("The course needs a name.");
+  if (name.length > 200) throw invalid("The course name is too long.");
   return {
     name,
-    price: wholeNumber(fields.price, `The price of ${name}`),
-    stock: wholeNumber(fields.stock, `The stock of ${name}`, { optional: true }),
+    price: wholeNumber(fields.price, `The fee of ${name}`),
+    stock: wholeNumber(fields.stock, `The seats left in ${name}`, { optional: true }),
     category: optionalText(fields.category),
     description: optionalText(fields.description),
     active: fields.active === undefined ? 1 : flag(fields.active),
@@ -235,18 +310,37 @@ function saveProduct(id, fields = {}) {
   const p = productFields(fields);
   return transaction(() => {
     const clash = q("SELECT id FROM products WHERE name = ?").get(p.name);
-    if (clash && clash.id !== id) throw invalid(`A product called "${p.name}" already exists.`);
+    if (clash && clash.id !== id) throw invalid(`A course called "${p.name}" already exists.`);
     const cols = Object.keys(p);
     if (id == null) {
       id = Number(q(`INSERT INTO products (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...Object.values(p)).lastInsertRowid);
     } else if (!q(`UPDATE products SET ${cols.map((k) => `${k} = ?`).join(", ")}, updated_at = ${NOW_SQL} WHERE id = ?`).run(...Object.values(p), id).changes) {
-      throw invalid("That product no longer exists.");
+      throw invalid("That course no longer exists.");
     }
     return getProduct(id);
   });
 }
 
 const deleteProduct = (id) => q("DELETE FROM products WHERE id = ?").run(id).changes > 0;
+
+// Several courses at once, all or nothing: "delete" removes them, "show" / "hide" set whether the
+// bot may offer them. Returns how many changed.
+const BULK_ACTIONS = { delete: null, show: 1, hide: 0 };
+function bulkProducts(action, ids) {
+  if (!Object.hasOwn(BULK_ACTIONS, action)) throw invalid("Choose what to do with the courses.");
+  if (!Array.isArray(ids) || ids.length === 0) throw invalid("Select at least one course.");
+  if (ids.length > 1000) throw invalid("That's more than 1,000 courses at once; select fewer.");
+  const clean = [...new Set(ids.map(Number))];
+  if (!clean.every((id) => Number.isInteger(id) && id > 0)) throw invalid("Those courses can't be found.");
+  const marks = clean.map(() => "?").join(", ");
+  return transaction(() => {
+    if (action === "delete") return { changed: q(`DELETE FROM products WHERE id IN (${marks})`).run(...clean).changes };
+    return {
+      changed: q(`UPDATE products SET active = ?, updated_at = ${NOW_SQL} WHERE id IN (${marks}) AND active <> ?`)
+        .run(BULK_ACTIONS[action], ...clean, BULK_ACTIONS[action]).changes,
+    };
+  });
+}
 
 // Import rows from a spreadsheet: [{ name, price, stock?, category?, description? }]. A row whose
 // name matches an existing product (any case) updates it, changing only the columns the file has
@@ -255,8 +349,8 @@ const deleteProduct = (id) => q("DELETE FROM products WHERE id = ?").run(id).cha
 // dryRun checks and counts without saving.
 const IMPORT_COLUMNS = ["price", "stock", "category", "description", "active"];
 function importProducts(rows, { dryRun = false } = {}) {
-  if (!Array.isArray(rows) || rows.length === 0) throw invalid("The file has no products.");
-  if (rows.length > 5000) throw invalid("That's more than 5,000 products; split the file.");
+  if (!Array.isArray(rows) || rows.length === 0) throw invalid("The file has no courses.");
+  if (rows.length > 5000) throw invalid("That's more than 5,000 courses; split the file.");
   const existing = new Map(listProducts().map((p) => [p.name.toLowerCase(), p]));
   const errors = [];
   const parsed = []; // [id or null, fields]
@@ -401,7 +495,7 @@ module.exports = {
   getBusiness, saveBusiness, setBotEnabled,
   listReplyLanguages, saveReplyLanguages, replyLanguageFor,
   listHandoverRules, saveHandoverRules, saveSettings,
-  getProduct, listProducts, searchProducts, saveProduct, deleteProduct, importProducts,
+  getProduct, listProducts, searchProducts, saveProduct, deleteProduct, bulkProducts, importProducts,
   listFaqs, saveFaq, deleteFaq,
   getContact, getContactByWaId, ensureContact, updateContact, setBotPaused,
   logMessage, recentMessages, setMessageMedia, getMedia,

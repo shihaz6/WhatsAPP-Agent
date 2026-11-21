@@ -6,7 +6,7 @@ const { test, beforeEach, after, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const db = require("../db");
-const { setupShop, REGULAR, PAUSED } = require("./fixtures");
+const { setupInstitute, REGULAR, PAUSED } = require("./fixtures");
 const { createAdmin } = require("../admin/api");
 
 const NOW = new Date("2026-11-10T06:00:00Z");
@@ -41,7 +41,7 @@ const call = async (method, path, { body, token = TOKEN } = {}) => {
 const post = (path, body = {}) => call("POST", path, { body });
 
 beforeEach(async () => {
-  setupShop();
+  setupInstitute();
   sent.length = 0;
   if (!server) { server = await startServer(); base = `http://localhost:${server.address().port}`; }
 });
@@ -78,7 +78,7 @@ describe("overview and conversations", () => {
     db.logMessage({ id: "o1", waId: REGULAR, direction: "in", type: "text", body: "hi", });
     const { status, data } = await call("GET", "/overview");
     assert.equal(status, 200);
-    assert.equal(data.business.name, "Test Spice Shop");
+    assert.equal(data.business.name, "Test Academy");
     assert.deepEqual([data.counts.contacts, data.counts.paused, data.counts.products, data.counts.out_of_stock], [3, 1, 4, 1]);
     assert.deepEqual(data.paused.map((c) => c.wa_id), [PAUSED]);
   });
@@ -89,7 +89,7 @@ describe("overview and conversations", () => {
     assert.equal(list[0].wa_id, REGULAR);
     assert.equal(list[0].last_body, "meeka kiyada?");
     const one = await call("GET", `/conversations/${REGULAR}`);
-    assert.equal(one.data.contact.name, "Test Customer");
+    assert.equal(one.data.contact.name, "Test Parent");
     assert.equal(one.data.messages.at(-1).body, "meeka kiyada?");
     assert.equal((await call("GET", "/conversations/94700000000")).status, 404);
   });
@@ -122,23 +122,34 @@ describe("overview and conversations", () => {
   });
 });
 
-describe("products", () => {
+describe("courses (stored as products)", () => {
   test("list, add, edit and delete; mistakes come back as 400 with a message for the owner", async () => {
-    assert.equal((await call("GET", "/products")).data.length, 5, "hidden products are listed for the owner");
-    const added = await post("/products", { name: "Pepper", price: "Rs 750", stock: "", category: "Spices" });
+    assert.equal((await call("GET", "/products")).data.length, 5, "hidden courses are listed for the owner");
+    const added = await post("/products", { name: "Chemistry Revision", price: "Rs 750", stock: "", category: "A/L Science" });
     assert.equal(added.status, 200);
     assert.deepEqual([added.data.price, added.data.stock], [750, null]);
-    const edited = await post(`/products/${added.data.id}`, { name: "Black Pepper", price: 800, stock: 5, active: false });
-    assert.deepEqual([edited.data.name, edited.data.active], ["Black Pepper", 0]);
-    const bad = await post("/products", { name: "cinnamon sticks", price: 1 });
+    const edited = await post(`/products/${added.data.id}`, { name: "Chemistry Paper Class", price: 800, stock: 5, active: false });
+    assert.deepEqual([edited.data.name, edited.data.active], ["Chemistry Paper Class", 0]);
+    const bad = await post("/products", { name: "grade 11 maths", price: 1 });
     assert.equal(bad.status, 400);
     assert.match(bad.data.error, /already exists/);
     assert.equal((await post(`/products/${added.data.id}/delete`)).data.ok, true);
     assert.equal((await call("GET", "/products")).data.length, 5);
   });
 
+  test("bulk: the courses page sends one request for the selected courses", async () => {
+    const ids = db.listProducts().slice(0, 2).map((p) => p.id);
+    const hidden = await post("/products/bulk", { action: "hide", ids });
+    assert.deepEqual([hidden.status, hidden.data.changed], [200, 2]);
+    const deleted = await post("/products/bulk", { action: "delete", ids });
+    assert.deepEqual([deleted.status, deleted.data.changed], [200, 2]);
+    const bad = await post("/products/bulk", { action: "delete", ids: [] });
+    assert.equal(bad.status, 400);
+    assert.match(bad.data.error, /Select at least one/);
+  });
+
   test("import: a dry run previews, the real run saves, and bad rows stop the whole import", async () => {
-    const rows = [{ name: "Green Tea", price: "1,600", stock: "10" }, { name: "black tea", price: 1500 }];
+    const rows = [{ name: "Biology Revision", price: "1,600", stock: "10" }, { name: "ielts preparation", price: 1500 }];
     const preview = await post("/products/import", { rows, dry_run: true });
     assert.deepEqual([preview.status, preview.data.created, preview.data.updated], [200, 1, 1]);
     assert.equal(db.listProducts().length, 5);
@@ -153,10 +164,20 @@ describe("products", () => {
   });
 });
 
+describe("office hours from the settings page", () => {
+  test("a chip saved from the page comes back as its wording", async () => {
+    const r = await post("/settings", { business: { name: "Test Academy", office_hours_preset: "mon_fri_9_5" } });
+    assert.equal(r.status, 200);
+    assert.deepEqual([r.data.business.office_hours_preset, r.data.business.opening_hours], ["mon_fri_9_5", "Mon–Fri, 9:00 AM–5:00 PM"]);
+    const bad = await post("/settings", { business: { office_hours_preset: "nonsense" } });
+    assert.equal(bad.status, 400);
+  });
+});
+
 describe("bot settings", () => {
   test("GET has everything on the page", async () => {
     const { data } = await call("GET", "/settings");
-    assert.equal(data.business.name, "Test Spice Shop");
+    assert.equal(data.business.name, "Test Academy");
     assert.deepEqual(data.languages.map((l) => l.code), ["si", "ta", "en"]);
     assert.equal(data.handover_rules.length, 3);
     assert.equal(data.faqs.length, 2);
@@ -164,22 +185,22 @@ describe("bot settings", () => {
 
   test("POST saves business details, languages and handover rules together", async () => {
     const r = await post("/settings", {
-      business: { name: "Renamed Shop", opening_hours: "Daily 8–8", handover_number: "+94 71 123 4567" },
+      business: { name: "Renamed Academy", opening_hours: "Daily 8–8", handover_number: "+94 71 123 4567" },
       languages: { ta: false },
-      handover_rules: [{ key: "bulk_order", enabled: false }],
+      handover_rules: [{ key: "group_enrolment", enabled: false }],
     });
     assert.equal(r.status, 200);
-    assert.equal(r.data.business.name, "Renamed Shop");
+    assert.equal(r.data.business.name, "Renamed Academy");
     assert.equal(r.data.business.handover_number, "94711234567");
     assert.equal(r.data.languages.find((l) => l.code === "ta").enabled, 0);
-    assert.equal(r.data.handover_rules.find((h) => h.key === "bulk_order").enabled, 0);
+    assert.equal(r.data.handover_rules.find((h) => h.key === "group_enrolment").enabled, 0);
   });
 
   test("a mistake anywhere saves nothing", async () => {
-    const r = await post("/settings", { business: { name: "Renamed Shop" }, languages: { si: false, ta: false, en: false } });
+    const r = await post("/settings", { business: { name: "Renamed Academy" }, languages: { si: false, ta: false, en: false } });
     assert.equal(r.status, 400);
     assert.match(r.data.error, /at least one reply language/);
-    assert.equal(db.getBusiness().name, "Test Spice Shop");
+    assert.equal(db.getBusiness().name, "Test Academy");
   });
 
   test("the bot switch for everyone works at once", async () => {

@@ -1,4 +1,4 @@
--- Catalyst WhatsApp shop assistant: data model (SQLite).
+-- Catalyst WhatsApp assistant for an educational institute: data model (SQLite).
 -- Everything the owner enters on the dashboard lives here, and the bot answers only from it.
 -- Conventions: money is whole units of business.currency (e.g. LKR 1250); timestamps are
 -- ISO 8601 UTC strings ('2026-11-19T15:08:58Z'). Safe to run on every start (IF NOT EXISTS / OR IGNORE).
@@ -11,28 +11,32 @@ CREATE TABLE IF NOT EXISTS business (
   id                  INTEGER PRIMARY KEY CHECK (id = 1),
   name                TEXT NOT NULL DEFAULT '',  -- shown in the dashboard header; the bot speaks for it
   owner_name          TEXT,                      -- greeting and avatar on the dashboard
-  opening_hours       TEXT,                      -- free text, e.g. 'Mon–Sat, 9:00 AM–7:00 PM'
+  opening_hours       TEXT,                      -- office hours, free text, e.g. 'Mon–Sat, 8:00 AM–6:00 PM'
+  office_opens        TEXT,                      -- daily start time, 24-hour HH:MM, e.g. '08:00' (NULL = not set)
+  office_closes       TEXT,                      -- daily finish time, 24-hour HH:MM, e.g. '18:00'
+  office_hours_preset TEXT CHECK (office_hours_preset IS NULL OR office_hours_preset IN ('mon_fri_9_5', 'mon_sat_8_6', 'every_day_8_8', 'custom')),  -- which chip the owner picked; opening_hours holds its text
   location            TEXT,
-  payment_details     TEXT,                      -- how customers pay (bank details, COD, ...)
-  delivery_info       TEXT,                      -- areas, times, charges
+  payment_details     TEXT,                      -- how fees are paid (bank details, at the office, ...)
+  delivery_info       TEXT,                      -- classes and enrolment: physical/online, intakes, how to register
   handover_number     TEXT,                      -- WhatsApp number told about each handover (digits only)
   bot_enabled         INTEGER NOT NULL DEFAULT 1 CHECK (bot_enabled IN (0, 1)),  -- 0 = bot silent for everyone
   currency            TEXT NOT NULL DEFAULT 'LKR',
   timezone            TEXT NOT NULL DEFAULT 'Asia/Colombo',
-  product_sheet_url   TEXT,                      -- Google Sheet the products are synced from (sync not built yet)
+  product_sheet_url   TEXT,                      -- Google Sheet the courses are synced from (sync not built yet)
   products_synced_at  TEXT,
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 INSERT OR IGNORE INTO business (id) VALUES (1);
 
--- What the business sells. Products page (manual, CSV import, or the Google Sheet).
+-- The institute's courses and classes (kept in the products table). Courses page (manual or CSV import).
+-- price = fee, stock = seats left, category = subject / grade, description = schedule, teacher, medium.
 CREATE TABLE IF NOT EXISTS products (
   id          INTEGER PRIMARY KEY,
   name        TEXT NOT NULL COLLATE NOCASE UNIQUE,  -- imports match existing products by name
-  price       INTEGER NOT NULL CHECK (price >= 0),  -- selling price, whole currency units
-  stock       INTEGER CHECK (stock IS NULL OR stock >= 0),  -- NULL = not tracked
+  price       INTEGER NOT NULL CHECK (price >= 0),  -- fee, whole currency units
+  stock       INTEGER CHECK (stock IS NULL OR stock >= 0),  -- seats left; NULL = not limited
   category    TEXT,
-  description TEXT,                                 -- size, pack, details the bot can quote
+  description TEXT,                                 -- schedule, teacher, medium, duration the bot can quote
   active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),  -- 0 = hidden from the bot
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -64,9 +68,9 @@ CREATE TABLE IF NOT EXISTS handover_rules (
   sort    INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO handover_rules (key, label, sort) VALUES
-  ('asks_for_person', 'Customer asks to speak to a person', 1),
+  ('asks_for_person', 'Student or parent asks to speak to a person', 1),
   ('bot_unsure',      'Bot is unsure of the answer', 2),
-  ('bulk_order',      'Bulk order over 10 items', 3);
+  ('group_enrolment', 'Group enrolment of 5 or more students', 3);
 
 -- A WhatsApp number that has messaged the business. Created on the first message.
 CREATE TABLE IF NOT EXISTS contacts (

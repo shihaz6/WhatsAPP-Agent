@@ -1,0 +1,31 @@
+{
+  "name": "catalyst-promo-reel",
+  "private": true,
+  "version": "0.1.0",
+  "description": "30s vertical Catalyst promo reel (1080x1920, 30fps) built with Remotion from the Google Flow clips",
+  "scripts": {
+    "prep": "bash scripts/prep-clips.sh",
+    "audio": "node scripts/make-audio.mjs",
+    "vo": "node scripts/make-vo-mix.mjs",
+    "studio": "remotion studio",
+    "render": "remotion render CatalystReel out/catalyst-reel.mp4",
+    "render:si": "remotion render CatalystReelSinhala out/catalyst-reel-sinhala.mp4",
+    "cover": "remotion still Cover out/catalyst-cover.png",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "5.1.0",
+    "@fontsource/inter": "5.1.0",
+    "@fontsource/noto-color-emoji": "5.1.0",
+    "@fontsource/noto-sans-sinhala": "5.1.0",
+    "@iconify-json/noto": "^1.2.10",
+    "@remotion/cli": "4.0.538",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.538"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

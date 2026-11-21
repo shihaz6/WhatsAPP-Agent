@@ -105,7 +105,7 @@ describe("Gemini", () => {
   });
 
   test("tool calls come back as given, so the agent can send them back with the tool results", async () => {
-    const toolCall = { id: "c1", type: "function", function: { name: "search_products", arguments: "{\"query\":\"tea\"}" },
+    const toolCall = { id: "c1", type: "function", function: { name: "search_courses", arguments: "{\"query\":\"tea\"}" },
       extra_content: { google: { thought_signature: "sig" } } };
     const f = fakeFetch([{ body: { choices: [{ message: { role: "assistant", content: null, tool_calls: [toolCall] }, finish_reason: "tool_calls" }] } }]);
     const r = await gemini(f).c.chat({ messages: [] });
@@ -119,7 +119,7 @@ describe("choosing the provider", () => {
     assert.equal(defaultProvider({ AI_PROVIDER: " Gemini " }), "gemini");
     assert.equal(defaultProvider({ GEMINI_API_KEY: "x" }), "gemini");
     assert.equal(defaultProvider({ GROQ_API_KEY: "x" }), "groq");
-    assert.throws(() => defaultProvider({ AI_PROVIDER: "openai" }), /AI_PROVIDER must be one of: gemini, nvidia, openrouter, groq/);
+    assert.throws(() => defaultProvider({ AI_PROVIDER: "openai" }), /AI_PROVIDER must be one of: gemini, nvidia, openrouter, groq, cloudflare/);
   });
 });
 
@@ -160,5 +160,32 @@ describe("OpenRouter", () => {
     const c = createLlmClient({ provider: "openrouter", apiKey: "or-key", fetchImpl: f, sleep: async () => {} });
     await assert.rejects(c.chat({ messages: [] }), /OpenRouter API 429: Provider returned error/);
     assert.equal(f.calls.length, 3);
+  });
+});
+
+describe("Cloudflare Workers AI", () => {
+  const withAccount = (id, fn) => {
+    const before = process.env.CLOUDFLARE_ACCOUNT_ID;
+    if (id === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID; else process.env.CLOUDFLARE_ACCOUNT_ID = id;
+    try { return fn(); } finally { if (before === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID; else process.env.CLOUDFLARE_ACCOUNT_ID = before; }
+  };
+
+  test("calls the account's OpenAI-compatible endpoint with gpt-oss-120b by default", async () => {
+    const f = fakeFetch([ok("hi")]);
+    const c = withAccount("abc123", () => createLlmClient({ provider: "cloudflare", apiKey: "cf-token", model: undefined, fetchImpl: f }));
+    assert.equal(c.model, process.env.CLOUDFLARE_MODEL || "@cf/openai/gpt-oss-120b");
+    await c.chat({ messages: [{ role: "user", content: "x" }] });
+    assert.equal(f.calls[0].url, "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1/chat/completions");
+    assert.equal(f.calls[0].auth, "Bearer cf-token");
+    assert.equal(f.calls[0].body.max_tokens, 2048);
+  });
+
+  test("without the account id it isn't configured and says which setting is missing", async () => {
+    const f = fakeFetch([]);
+    const c = withAccount(undefined, () => createLlmClient({ provider: "cloudflare", apiKey: "cf-token", fetchImpl: f }));
+    assert.equal(c.isConfigured(), false);
+    assert.equal(c.keyVar, "CLOUDFLARE_ACCOUNT_ID");
+    await assert.rejects(c.chat({ messages: [] }), /CLOUDFLARE_ACCOUNT_ID is not set/);
+    assert.equal(f.calls.length, 0);
   });
 });

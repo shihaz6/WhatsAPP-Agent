@@ -6,10 +6,10 @@ process.env.DB_PATH = ":memory:";
 const { test, beforeEach, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
-const { setupShop, NEW_NUMBER, PAUSED } = require("./fixtures");
+const { setupInstitute, NEW_NUMBER, PAUSED } = require("./fixtures");
 const { createHandler } = require("../bot/handler");
 
-const OWNER = "94711234567"; // the shop's handover number in these tests
+const OWNER = "94711234567"; // the institute's handover number in these tests
 const quietLog = { log() {}, warn() {}, error() {} };
 
 // Fake WhatsApp client: records what would be sent. Each send takes a little time,
@@ -48,7 +48,7 @@ const messagesFor = (waId) => db.recentMessages(waId, 100);
 
 let wa, agent, bot;
 beforeEach(() => {
-  setupShop();
+  setupInstitute();
   wa = fakeWhatsApp();
   agent = fakeAgent();
   bot = createHandler({ db, whatsapp: wa, agent, log: quietLog });
@@ -177,7 +177,7 @@ describe("telling the owner about a handover", () => {
   // Fake agent that hands the chat over, as the real one does through hand_off_to_owner.
   const handingOver = {
     async respond({ contact }) {
-      db.setBotPaused(contact.id, true, "Handed over by the bot:\nWants 30 packs of Cinnamon Sticks");
+      db.setBotPaused(contact.id, true, "Handed over by the bot:\nWants to enrol in Grade 11 Maths");
       return { replies: [{ type: "text", body: "The owner will reply here." }], handedOff: true };
     },
   };
@@ -186,7 +186,7 @@ describe("telling the owner about a handover", () => {
     db.saveBusiness({ handover_number: `+${OWNER}` });
     await createHandler({ db, whatsapp: wa, agent: handingOver, log: quietLog }).handleMessage(textMsg(NEW_NUMBER, "I want 30 packs"));
     assert.deepEqual(wa.sent.map((s) => s.to), [NEW_NUMBER, OWNER]);
-    assert.ok(wa.sent[1].body.includes(`From: +${NEW_NUMBER}\nWants 30 packs of Cinnamon Sticks`), wa.sent[1].body);
+    assert.ok(wa.sent[1].body.includes(`From: +${NEW_NUMBER}\nWants to enrol in Grade 11 Maths`), wa.sent[1].body);
     assert.doesNotMatch(wa.sent[1].body, /Handed over by the bot/);
     assert.equal(messagesFor(OWNER).length, 0, "the alert isn't logged as a customer chat");
   });

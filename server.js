@@ -41,7 +41,7 @@ if (!whatsapp.isConfigured()) {
 }
 db.open();
 if (!db.getBusiness()?.name) {
-  console.warn("Note: no business details yet. Add them in the dashboard under Bot settings (and products under Products).");
+  console.warn("Note: no business details yet. Add them in the dashboard under Bot settings (and courses under Courses).");
 }
 const llm = createLlmClient();
 if (!llm.isConfigured()) {

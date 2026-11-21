@@ -1,9 +1,9 @@
-// Minimal chat-completions client for the AI model, using built-in fetch. Gemini, NVIDIA, OpenRouter and Groq
+// Minimal chat-completions client for the AI model, using built-in fetch. Gemini, NVIDIA, OpenRouter, Groq and Cloudflare
 // all offer the OpenAI chat-completions format, so the agent works the same with any of them.
 // Retries rate limits (429) and server errors (e.g. Gemini's 503 "high demand"), honouring a
 // retry-after header when there is one.
 //
-// AI_PROVIDER picks the provider: "gemini", "nvidia", "openrouter" or "groq". Unset: Gemini when GEMINI_API_KEY is set,
+// AI_PROVIDER picks the provider: "gemini", "nvidia", "openrouter", "groq" or "cloudflare". Unset: Gemini when GEMINI_API_KEY is set,
 // otherwise Groq.
 
 const PROVIDERS = {
@@ -62,6 +62,21 @@ const PROVIDERS = {
     tokens: (n) => ({ max_completion_tokens: n }),
     maxTokens: 1024,
   },
+  cloudflare: {
+    name: "Cloudflare Workers AI",
+    // The OpenAI-compatible endpoint is per Cloudflare account.
+    url: (env) => `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID ?? "")}/ai/v1/chat/completions`,
+    keyVar: "CLOUDFLARE_API_TOKEN",
+    // Also needed: the account the token works in.
+    accountVar: "CLOUDFLARE_ACCOUNT_ID",
+    modelVar: "CLOUDFLARE_MODEL",
+    // The model this bot first ran on (through Groq); supports tool calls on Workers AI.
+    defaultModel: "@cf/openai/gpt-oss-120b",
+    effortVar: "CLOUDFLARE_REASONING_EFFORT",
+    maxRetries: 2,
+    tokens: (n) => ({ max_tokens: n }),
+    maxTokens: 2048,
+  },
 };
 
 class LlmError extends Error {
@@ -97,9 +112,12 @@ function createLlmClient({
   model ??= process.env[p.modelVar] || p.defaultModel;
   reasoningEffort ??= process.env[p.effortVar] || undefined;
   maxRetries ??= p.maxRetries;
+  const url = typeof p.url === "function" ? p.url(process.env) : p.url;
+  // A provider that also needs an account id isn't usable without it.
+  const missing = p.accountVar && !process.env[p.accountVar] ? p.accountVar : !apiKey ? p.keyVar : null;
 
   async function chat({ messages, tools, temperature = 0.3, maxTokens = p.maxTokens }) {
-    if (!apiKey) throw new LlmError(`${p.keyVar} is not set`, 0);
+    if (missing) throw new LlmError(`${missing} is not set`, 0);
     const body = JSON.stringify({
       model,
       messages,
@@ -112,7 +130,7 @@ function createLlmClient({
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
-        res = await fetchImpl(p.url, {
+        res = await fetchImpl(url, {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
           body,
@@ -142,7 +160,7 @@ function createLlmClient({
     }
   }
 
-  return { chat, provider, model, keyVar: p.keyVar, isConfigured: () => Boolean(apiKey) };
+  return { chat, provider, model, keyVar: missing ?? p.keyVar, isConfigured: () => !missing };
 }
 
 module.exports = { createLlmClient, defaultProvider, LlmError, PROVIDERS };

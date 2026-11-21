@@ -108,6 +108,7 @@ function createAdmin({ db, whatsapp, token = process.env.ADMIN_TOKEN, clock = ()
     }],
     ["POST", /^\/products\/(\d+)$/, ([id], body) => [200, db.saveProduct(Number(id), body)]],
     ["POST", /^\/products\/(\d+)\/delete$/, ([id]) => [200, { ok: db.deleteProduct(Number(id)) }]],
+    ["POST", /^\/products\/bulk$/, (_, body) => [200, db.bulkProducts(body.action, body.ids)]],
 
     // Bot settings: business details, reply languages and handover rules are saved together.
     ["GET", /^\/settings$/, () => [200, settings()]],

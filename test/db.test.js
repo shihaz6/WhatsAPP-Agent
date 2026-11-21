@@ -5,7 +5,7 @@ process.env.DB_PATH = ":memory:";
 const { test, beforeEach, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
-const { setupShop, REGULAR, PAUSED } = require("./fixtures");
+const { setupInstitute, REGULAR, PAUSED } = require("./fixtures");
 
 const rejects = (fn, pattern) => assert.throws(fn, (err) => err.status === 400 && pattern.test(err.message));
 
@@ -19,29 +19,29 @@ describe("a new database", () => {
     assert.equal(b.currency, "LKR");
     assert.deepEqual(db.listReplyLanguages(), [{ code: "si", enabled: 1 }, { code: "ta", enabled: 1 }, { code: "en", enabled: 1 }]);
     assert.deepEqual(db.listHandoverRules().map((r) => [r.key, r.enabled]),
-      [["asks_for_person", 1], ["bot_unsure", 1], ["bulk_order", 1]]);
+      [["asks_for_person", 1], ["bot_unsure", 1], ["group_enrolment", 1]]);
     assert.deepEqual([db.listProducts(), db.listFaqs(), db.listConversations()], [[], [], []]);
   });
 
   test("applying the schema again keeps the data (it runs on every start)", () => {
     db.saveBusiness({ name: "Kept" });
-    db.saveHandoverRules([{ key: "bulk_order", enabled: false }]);
+    db.saveHandoverRules([{ key: "group_enrolment", enabled: false }]);
     const schema = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "db", "schema.sql"), "utf8");
     db.open().exec(schema);
     assert.equal(db.getBusiness().name, "Kept");
-    assert.equal(db.listHandoverRules().find((r) => r.key === "bulk_order").enabled, 0);
+    assert.equal(db.listHandoverRules().find((r) => r.key === "group_enrolment").enabled, 0);
     assert.equal(db.listHandoverRules().length, 3);
   });
 });
 
 describe("business details", () => {
-  beforeEach(setupShop);
+  beforeEach(setupInstitute);
 
   test("saves only the fields given; the name is required", () => {
     db.saveBusiness({ opening_hours: "Every day 8–8" });
     const b = db.getBusiness();
     assert.equal(b.opening_hours, "Every day 8–8");
-    assert.equal(b.name, "Test Spice Shop");
+    assert.equal(b.name, "Test Academy");
     assert.equal(b.location, "1 Test Road, Colombo 03");
     rejects(() => db.saveBusiness({ name: "  " }), /name is required/);
     db.saveBusiness({ delivery_info: "" });
@@ -66,7 +66,7 @@ describe("business details", () => {
 });
 
 describe("reply languages and handover rules", () => {
-  beforeEach(setupShop);
+  beforeEach(setupInstitute);
 
   test("languages are switched on and off; at least one stays on", () => {
     db.saveReplyLanguages({ ta: false });
@@ -86,8 +86,8 @@ describe("reply languages and handover rules", () => {
   });
 
   test("handover rules are switched on and off by key", () => {
-    db.saveHandoverRules([{ key: "bulk_order", enabled: false }]);
-    assert.equal(db.listHandoverRules().find((r) => r.key === "bulk_order").enabled, 0);
+    db.saveHandoverRules([{ key: "group_enrolment", enabled: false }]);
+    assert.equal(db.listHandoverRules().find((r) => r.key === "group_enrolment").enabled, 0);
     rejects(() => db.saveHandoverRules([{ key: "nope", enabled: true }]), /Unknown handover rule/);
   });
 
@@ -98,60 +98,125 @@ describe("reply languages and handover rules", () => {
       languages: { ta: false },
       handover_rules: [{ key: "nope", enabled: false }],
     }), /Unknown handover rule/);
-    assert.equal(db.getBusiness().opening_hours, "Mon–Sat, 9:00 AM–7:00 PM");
+    assert.equal(db.getBusiness().opening_hours, "Mon–Sat, 8:00 AM–6:00 PM");
     assert.equal(db.listReplyLanguages().find((l) => l.code === "ta").enabled, 1);
 
-    const saved = db.saveSettings({ business: { opening_hours: "changed" }, languages: { ta: false }, handover_rules: [{ key: "bulk_order", enabled: false }] });
+    const saved = db.saveSettings({ business: { opening_hours: "changed" }, languages: { ta: false }, handover_rules: [{ key: "group_enrolment", enabled: false }] });
     assert.equal(saved.business.opening_hours, "changed");
     assert.equal(saved.languages.find((l) => l.code === "ta").enabled, 0);
-    assert.equal(saved.handover_rules.find((r) => r.key === "bulk_order").enabled, 0);
+    assert.equal(saved.handover_rules.find((r) => r.key === "group_enrolment").enabled, 0);
+  });
+});
+
+describe("office hours chips", () => {
+  beforeEach(setupInstitute);
+
+  test("a chip sets its wording; the wording is stored in opening_hours for the bot", () => {
+    db.saveBusiness({ office_hours_preset: "mon_fri_9_5" });
+    assert.deepEqual([db.getBusiness().office_hours_preset, db.getBusiness().opening_hours], ["mon_fri_9_5", "Mon–Fri, 9:00 AM–5:00 PM"]);
+    db.saveBusiness({ office_hours_preset: "every_day_8_8" });
+    assert.equal(db.getBusiness().opening_hours, "Every day, 8:00 AM–8:00 PM");
+  });
+
+  test("custom keeps the text the owner typed", () => {
+    db.saveBusiness({ office_hours_preset: "custom", opening_hours: "By appointment" });
+    assert.deepEqual([db.getBusiness().office_hours_preset, db.getBusiness().opening_hours], ["custom", "By appointment"]);
+    db.saveBusiness({ office_hours_preset: "custom", opening_hours: "" });
+    assert.equal(db.getBusiness().opening_hours, null, "an emptied custom field is cleared");
+  });
+
+  test("typed text that matches a chip counts as that chip; other text is custom", () => {
+    db.saveBusiness({ opening_hours: "Mon–Sat, 8:00 AM–6:00 PM" });
+    assert.equal(db.getBusiness().office_hours_preset, "mon_sat_8_6");
+    db.saveBusiness({ opening_hours: "Weekdays only" });
+    assert.equal(db.getBusiness().office_hours_preset, "custom");
+  });
+
+  test("an unknown chip is refused and nothing is saved", () => {
+    db.saveBusiness({ office_hours_preset: "mon_fri_9_5" });
+    rejects(() => db.saveBusiness({ office_hours_preset: "weekends", opening_hours: "x" }), /Choose one of the office hours/);
+    assert.deepEqual([db.getBusiness().office_hours_preset, db.getBusiness().opening_hours], ["mon_fri_9_5", "Mon–Fri, 9:00 AM–5:00 PM"]);
+  });
+
+  test("a chip sets the start and finish times too", () => {
+    db.saveBusiness({ office_hours_preset: "mon_sat_8_6" });
+    assert.deepEqual([db.getBusiness().office_opens, db.getBusiness().office_closes], ["08:00", "18:00"]);
+    db.saveBusiness({ office_hours_preset: "mon_fri_9_5", office_opens: "07:00", office_closes: "19:00" });
+    assert.deepEqual([db.getBusiness().office_opens, db.getBusiness().office_closes], ["09:00", "17:00"], "times sent with a chip are ignored");
+  });
+
+  test("typed times are checked: both or neither, 24-hour, finish after start", () => {
+    db.saveBusiness({ office_opens: "09:30", office_closes: "16:45" });
+    assert.deepEqual([db.getBusiness().office_opens, db.getBusiness().office_closes], ["09:30", "16:45"]);
+    rejects(() => db.saveBusiness({ office_opens: "09:30", office_closes: "" }), /both the opening and the closing/);
+    rejects(() => db.saveBusiness({ office_opens: "17:00", office_closes: "08:00" }), /after the opening time/);
+    rejects(() => db.saveBusiness({ office_opens: "8am", office_closes: "17:00" }), /like 08:00/);
+    rejects(() => db.saveBusiness({ office_opens: "24:00", office_closes: "25:00" }), /like 08:00/);
+    assert.deepEqual([db.getBusiness().office_opens, db.getBusiness().office_closes], ["09:30", "16:45"], "a refused save changes nothing");
+    db.saveBusiness({ office_opens: "", office_closes: "" });
+    assert.deepEqual([db.getBusiness().office_opens, db.getBusiness().office_closes], [null, null], "both blank clears them");
+  });
+
+  test("changing a time away from the chip makes the hours custom", () => {
+    db.saveBusiness({ office_hours_preset: "mon_sat_8_6" });
+    db.saveBusiness({ office_opens: "08:00", office_closes: "18:00" });
+    assert.equal(db.getBusiness().office_hours_preset, "mon_sat_8_6", "same times: still the chip");
+    db.saveBusiness({ office_opens: "08:30", office_closes: "18:00" });
+    assert.equal(db.getBusiness().office_hours_preset, "custom");
+  });
+
+  test("clearing the chip leaves the hours text alone", () => {
+    db.saveBusiness({ office_hours_preset: "mon_sat_8_6" });
+    db.saveBusiness({ office_hours_preset: "" });
+    assert.equal(db.getBusiness().office_hours_preset, null);
+    assert.equal(db.getBusiness().opening_hours, "Mon–Sat, 8:00 AM–6:00 PM");
   });
 });
 
 describe("products", () => {
-  beforeEach(setupShop);
+  beforeEach(setupInstitute);
 
   test("listed by category then name; hidden ones only when asked", () => {
-    // Pantry, Spices (Cinnamon, Old Hidden), Sweeteners, Tea
+    // A/L Science, IELTS, Languages, O/L (Grade 11 Maths, Old Hidden)
     assert.deepEqual(db.listProducts().map((p) => p.name),
-      ["Coconut Oil", "Cinnamon Sticks", "Old Hidden Item", "Kithul Treacle", "Black Tea"]);
+      ["A/L Physics Theory", "IELTS Preparation", "Spoken English", "Grade 11 Maths", "Old Hidden Item"]);
     assert.ok(!db.listProducts({ activeOnly: true }).some((p) => p.name === "Old Hidden Item"));
   });
 
-  test("prices accept spreadsheet formats but must be whole numbers; stock is optional", () => {
-    const p = db.saveProduct(null, { name: "Pepper", price: "Rs 1,250", stock: "" });
+  test("fees accept spreadsheet formats but must be whole numbers; seats are optional", () => {
+    const p = db.saveProduct(null, { name: "Chemistry Revision", price: "Rs 1,250", stock: "" });
     assert.equal(p.price, 1250);
     assert.equal(p.stock, null);
-    assert.equal(db.saveProduct(null, { name: "Cloves", price: "LKR 900.00", stock: "7" }).stock, 7);
+    assert.equal(db.saveProduct(null, { name: "Art Class", price: "LKR 900.00", stock: "7" }).stock, 7);
     rejects(() => db.saveProduct(null, { name: "Bad", price: "12.50" }), /whole number/);
     rejects(() => db.saveProduct(null, { name: "Bad", price: -1 }), /whole number/);
-    rejects(() => db.saveProduct(null, { name: "Bad", price: 10, stock: "lots" }), /stock of Bad/);
+    rejects(() => db.saveProduct(null, { name: "Bad", price: 10, stock: "lots" }), /seats left in Bad/);
     rejects(() => db.saveProduct(null, { name: "", price: 10 }), /needs a name/);
   });
 
   test("names are unique in any case; update and delete", () => {
-    rejects(() => db.saveProduct(null, { name: "cinnamon sticks", price: 1 }), /already exists/);
-    const tea = db.listProducts().find((p) => p.name === "Black Tea");
-    const updated = db.saveProduct(tea.id, { name: "Black Tea", price: 1500, stock: 10 });
+    rejects(() => db.saveProduct(null, { name: "grade 11 maths", price: 1 }), /already exists/);
+    const tea = db.listProducts().find((p) => p.name === "IELTS Preparation");
+    const updated = db.saveProduct(tea.id, { name: "IELTS Preparation", price: 1500, stock: 10 });
     assert.deepEqual([updated.price, updated.stock], [1500, 10]);
     assert.equal(db.deleteProduct(tea.id), true);
     assert.equal(db.getProduct(tea.id), null);
     rejects(() => db.saveProduct(tea.id, { name: "Gone", price: 1 }), /no longer exists/);
   });
 
-  test("search matches name, category and description; hidden products never show", () => {
-    assert.deepEqual(db.searchProducts("cinnamon").map((p) => p.name), ["Cinnamon Sticks"]);
-    assert.deepEqual(db.searchProducts("tea").map((p) => p.name), ["Black Tea"]);
-    assert.deepEqual(db.searchProducts("500ml").map((p) => p.name), ["Coconut Oil"]);
-    assert.ok(!db.searchProducts("spices").some((p) => p.name === "Old Hidden Item"));
-    assert.equal(db.searchProducts("").length, 4, "empty = everything on sale");
-    assert.deepEqual(db.searchProducts("caviar"), []);
+  test("search matches name, subject and details; hidden courses never show", () => {
+    assert.deepEqual(db.searchProducts("maths").map((p) => p.name), ["Grade 11 Maths"]);
+    assert.deepEqual(db.searchProducts("ielts").map((p) => p.name), ["IELTS Preparation"]);
+    assert.deepEqual(db.searchProducts("months").map((p) => p.name), ["Spoken English"]);
+    assert.ok(!db.searchProducts("o/l").some((p) => p.name === "Old Hidden Item"));
+    assert.equal(db.searchProducts("").length, 4, "empty = everything on offer");
+    assert.deepEqual(db.searchProducts("piano"), []);
   });
 
-  test("import: a dry run counts new and updated products without saving", () => {
+  test("import: a dry run counts new and updated courses without saving", () => {
     const rows = [
-      { name: "black tea", price: "1,500", stock: "40", category: "Tea" },
-      { name: "Green Tea", price: 1600 },
+      { name: "ielts preparation", price: "1,500", stock: "40", category: "IELTS" },
+      { name: "Biology Revision", price: 1600 },
     ];
     const r = db.importProducts(rows, { dryRun: true });
     assert.deepEqual([r.ok, r.created, r.updated, r.errors], [true, 1, 1, []]);
@@ -159,17 +224,31 @@ describe("products", () => {
     const real = db.importProducts(rows);
     assert.equal(real.ok, true);
     assert.equal(db.listProducts().length, 6);
-    assert.equal(db.searchProducts("black tea")[0].price, 1500);
+    assert.equal(db.searchProducts("ielts preparation")[0].price, 1500);
   });
 
-  test("import: an update changes only the columns in the file and keeps the product's name", () => {
-    db.importProducts([{ name: "black tea", price: "1,500" }]);
-    const tea = db.listProducts().find((p) => p.name.toLowerCase() === "black tea");
-    assert.equal(tea.name, "Black Tea", "name kept as the owner wrote it");
+  test("import: an update changes only the columns in the file and keeps the course's name", () => {
+    db.importProducts([{ name: "ielts preparation", price: "1,500" }]);
+    const tea = db.listProducts().find((p) => p.name.toLowerCase() === "ielts preparation");
+    assert.equal(tea.name, "IELTS Preparation", "name kept as the owner wrote it");
     assert.equal(tea.price, 1500);
-    assert.deepEqual([tea.description, tea.category, tea.stock], ["200g loose leaf", "Tea", null], "missing columns untouched");
-    db.importProducts([{ name: "Black Tea", price: 1500, description: "" }]);
-    assert.equal(db.listProducts().find((p) => p.name === "Black Tea").description, null, "an empty cell in a column that exists clears it");
+    assert.deepEqual([tea.description, tea.category, tea.stock], ["8 weeks, weekday evenings", "IELTS", null], "missing columns untouched");
+    db.importProducts([{ name: "IELTS Preparation", price: 1500, description: "" }]);
+    assert.equal(db.listProducts().find((p) => p.name === "IELTS Preparation").description, null, "an empty cell in a column that exists clears it");
+  });
+
+  test("bulk: hide, show and delete several courses at once; bad input saves nothing", () => {
+    const ids = db.listProducts().filter((p) => ["Spoken English", "IELTS Preparation"].includes(p.name)).map((p) => p.id);
+    assert.deepEqual(db.bulkProducts("hide", ids), { changed: 2 });
+    assert.ok(db.listProducts().filter((p) => ids.includes(p.id)).every((p) => p.active === 0));
+    assert.deepEqual(db.bulkProducts("hide", ids), { changed: 0 }, "already hidden: nothing changes");
+    assert.deepEqual(db.bulkProducts("show", [ids[0], ids[0]]), { changed: 1 }, "duplicate ids count once");
+    assert.deepEqual(db.bulkProducts("delete", ids), { changed: 2 });
+    assert.equal(db.listProducts().length, 3);
+    rejects(() => db.bulkProducts("explode", [1]), /Choose what to do/);
+    rejects(() => db.bulkProducts("delete", []), /Select at least one/);
+    rejects(() => db.bulkProducts("delete", [1, "x"]), /can't be found/);
+    assert.equal(db.listProducts().length, 3, "nothing changed by the rejected calls");
   });
 
   test("import: any bad row means nothing is saved, and every problem is listed by row", () => {
@@ -183,12 +262,12 @@ describe("products", () => {
     assert.deepEqual(r.errors.map((e) => e.row), [2, 3, 4]);
     assert.match(r.errors[2].error, /in the file twice/);
     assert.equal(db.listProducts().length, 5);
-    rejects(() => db.importProducts([]), /no products/);
+    rejects(() => db.importProducts([]), /no courses/);
   });
 });
 
 describe("FAQs, contacts and messages", () => {
-  beforeEach(setupShop);
+  beforeEach(setupInstitute);
 
   test("FAQs: add, edit, delete; both fields required", () => {
     const f = db.saveFaq(null, { question: "Open on Sunday?", answer: "No." });

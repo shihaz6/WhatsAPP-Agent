@@ -63,6 +63,11 @@ const ENGLISH = new Set(`
   weather know tell send give book trial price cost many seats left still not yet
 `.split(/\s+/).filter(Boolean));
 
+// An English greeting on its own ("hi", "hiii", "hello", "hey") opens in English, even if the
+// contact wrote Singlish/Tanglish before. A greeting next to a Singlish/Tanglish word ("hi machan")
+// still goes to that language.
+const GREETING = /^(h+i+|h+e+y+|hel+o+|helo+|hai+|hallo+|hlo+|yo+)$/;
+
 // English tutoring words that get a Sinhala/Tamil ending glued on: "classeka", "Saturdayta",
 // "classku", "Saturdayla", "feesoda". Only these stems count, so real English words that
 // happen to end the same way ("formula", "schedule") don't.
@@ -85,6 +90,7 @@ function detectLanguage(text) {
   for (const w of words) {
     if (SINGLISH.has(w)) singlish += 2;
     else if (TANGLISH.has(w)) tanglish += 2;
+    else if (GREETING.test(w)) english += 2;
     else if (ENGLISH.has(w)) english += 1;
     else if (SINGLISH_SUFFIX.test(w) || SINGLISH_VERB.test(w)) singlish += 1;
     else if (TANGLISH_SUFFIX.test(w)) tanglish += 1;
@@ -94,7 +100,7 @@ function detectLanguage(text) {
     if (singlish === tanglish) return null; // can't tell
     return singlish > tanglish ? "singlish" : "tanglish";
   }
-  // Plain English needs two English words, so "ok" or "Kasun" alone doesn't switch it.
+  // Plain English needs two English words (or a greeting), so "ok" or "Kasun" alone doesn't switch it.
   return english >= 2 ? "en" : null;
 }
 

@@ -41,3 +41,6 @@ data/
 # Promo video: rendered output and the generated soundtrack (npm run soundtrack)
 video/out/
 video/public/soundtrack.wav
+
+# Database backups (contain chats and phone numbers)
+backups/

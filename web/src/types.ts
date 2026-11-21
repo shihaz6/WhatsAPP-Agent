@@ -61,6 +61,11 @@ export interface Business {
   name: string;
   owner_name: string | null;
   opening_hours: string | null;
+  /** Which office hours chip the owner picked; "custom" = typed. null = none chosen. */
+  office_hours_preset: "mon_fri_9_5" | "mon_sat_8_6" | "every_day_8_8" | "custom" | null;
+  /** Daily start and finish, 24-hour "HH:MM", e.g. "08:00" and "18:00". null = not set. */
+  office_opens: string | null;
+  office_closes: string | null;
   location: string | null;
   payment_details: string | null;
   delivery_info: string | null;
@@ -153,7 +158,8 @@ export interface SettingsData {
 
 /** POST /settings: everything on the Bot settings page, saved together. */
 export interface SettingsInput {
-  business: Partial<Pick<Business, "name" | "owner_name" | "opening_hours" | "location" | "payment_details" | "delivery_info" | "handover_number">>;
+  /** The server checks the chip key; an empty string means none chosen. */
+  business: Partial<Pick<Business, "name" | "owner_name" | "opening_hours" | "office_opens" | "office_closes" | "location" | "payment_details" | "delivery_info" | "handover_number">> & { office_hours_preset?: string | null };
   languages: Partial<Record<ReplyLanguageCode, boolean>>;
   handover_rules: { key: string; enabled: boolean }[];
 }

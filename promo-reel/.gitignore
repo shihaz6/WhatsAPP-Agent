@@ -1,0 +1,6 @@
+node_modules/
+out/
+# generated from the Flow clips / scripts (rebuild with npm run prep && npm run audio)
+public/clips/
+public/audio/
+public/cover-bg.png

@@ -96,6 +96,8 @@ export const api = {
   // Products (the bot uses changes from the next message)
   products: () => request<Product[]>("/products"),
   saveProduct: (id: number | null, product: ProductInput) => post<Product>(id ? `/products/${id}` : "/products", product),
+  /** Several at once: "delete", or "show" / "hide" from the bot. */
+  bulkProducts: (action: "delete" | "show" | "hide", ids: number[]) => post<{ changed: number }>("/products/bulk", { action, ids }),
   deleteProduct: (id: number) => post<{ ok: boolean }>(`/products/${id}/delete`),
   /** dryRun checks and counts without saving. A file with mistakes comes back as ImportError. */
   importProducts: (rows: ProductInput[], dryRun: boolean) => importRequest(rows, dryRun),
